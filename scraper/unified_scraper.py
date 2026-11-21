@@ -150,11 +150,18 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3, checkpoint: Optional
                     log(f"    Page 1: Up to date (all {len(p1_items)} releases already indexed)")
 
             # 2. Advance historical backfill cursor
+            if "categories" not in checkpoint:
+                checkpoint["categories"] = {}
             cat_state = checkpoint["categories"].setdefault(cat, {"current_page": 2, "max_pages": 100, "completed": False})
             curr_cursor = cat_state.get("current_page", 2)
             if curr_cursor <= 1:
                 curr_cursor = 2
                 cat_state["current_page"] = 2
+
+            if curr_cursor > cat_state.get("max_pages", 99999):
+                cat_state["completed"] = True
+                save_checkpoint(checkpoint)
+                log(f"    [✓] Category [{cat}] has completed all available pages.")
 
             if not cat_state.get("completed", False):
                 log(f"    [*] Progress Tracing: Crawling historical page {curr_cursor} for [{cat}]...")
@@ -183,6 +190,10 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3, checkpoint: Optional
                     cat_state["current_page"] = curr_cursor + 1
                     save_checkpoint(checkpoint)
                     log(f"    [✓] Progress saved: [{cat}] cursor advanced to page {curr_cursor + 1}")
+                elif hist_items is not None and len(hist_items) == 0:
+                    cat_state["completed"] = True
+                    save_checkpoint(checkpoint)
+                    log(f"    [✓] Reached end of category [{cat}]. Marked completed in checkpoint.")
                 elif hist_items is None:
                     log(f"    [!] Skipping cursor advance for [{cat}] due to Cloudflare block.")
 

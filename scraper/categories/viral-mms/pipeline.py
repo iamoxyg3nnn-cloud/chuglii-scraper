@@ -178,7 +178,8 @@ def run_scraper_pipeline(
         res = upsert_scraped_videos_batch(polished_batch)
         count = len(polished_batch)
         total_upserted += count
-        print(f"  [✓] Page {p}: Upserted {count} Viral MMS videos (DB status: {res.get('success', True)})")
+        db_status = res.get('success', True) if isinstance(res, dict) else (bool(res) if res is not None else False)
+        print(f"  [✓] Page {p}: Upserted {count} Viral MMS videos (DB status: {db_status})")
         time.sleep(0.5)
 
     return total_upserted

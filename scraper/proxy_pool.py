@@ -18,7 +18,7 @@ PROXY_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
 ]
 
-TEST_TARGET_URL = "https://supjav.com/category/uncensored-jav"
+TEST_TARGET_URL = "https://supjav.com/"
 
 class AutoProxyPool:
     def __init__(self, target_url: str = TEST_TARGET_URL, min_working: int = 3):
@@ -27,8 +27,11 @@ class AutoProxyPool:
         self.working_proxies: List[str] = []
         self.failed_proxies: Set[str] = set()
 
-    def harvest_candidates(self, max_candidates: int = 250) -> List[str]:
+    def harvest_candidates(self, max_candidates: int = 300) -> List[str]:
         """Harvests fresh proxy candidates from multiple public APIs."""
+        if len(self.failed_proxies) > 600:
+            self.failed_proxies.clear()
+
         candidates = set()
         print("[*] Harvesting public proxy lists...")
 
@@ -64,10 +67,10 @@ class AutoProxyPool:
                 self.target_url,
                 impersonate="chrome124",
                 proxies={"http": proxy_url, "https": proxy_url},
-                timeout=5
+                timeout=6
             )
-            # Must return 200 and actual page body (not a small 403 / captcha challenge)
-            if r.status_code == 200 and len(r.text) > 15000:
+            # Must return 200, valid HTML, and not a Cloudflare challenge
+            if r.status_code == 200 and len(r.text) > 8000 and "Just a moment..." not in r.text and "cf-chl" not in r.text:
                 return proxy_url
         except Exception:
             pass

@@ -66,16 +66,26 @@ def upsert_scraped_video(polished_record: Dict[str, Any]) -> Any:
     """
     return upsert_scraped_videos_batch([polished_record])
 
-def upsert_scraped_videos_batch(polished_records: List[Dict[str, Any]]) -> Any:
+def upsert_scraped_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
     """
     Batch inserts or updates video records in the segregated scraper.videos table.
+    Uses resilient REST RPC with automatic exponential backoff on Cloudflare Tunnel hiccups.
     """
     if not polished_records:
         return {"success": True, "count": 0}
     
-    supabase = get_supabase_client()
-    response = supabase.rpc("scraper_upsert_videos", {"items": polished_records}).execute()
-    return response.data
+    res = call_supabase_rpc("scraper_upsert_videos", {"items": polished_records}, retries=retries)
+    if res is not None:
+        return res
+    
+    # Fallback to supabase-py client if available
+    try:
+        supabase = get_supabase_client()
+        response = supabase.rpc("scraper_upsert_videos", {"items": polished_records}).execute()
+        return response.data
+    except Exception as e:
+        print(f"[!] Supabase Viral MMS upsert batch failed after {retries} attempts: {e}")
+        return {"success": False, "error": str(e), "count": 0}
 
 def get_scraped_videos(source_site: Optional[str] = None, tag: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
     """
@@ -98,19 +108,24 @@ import time
 def upsert_japanese_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
     """
     Batch inserts or updates video records in the segregated scraper.japanese_videos table.
-    Includes automatic retry with exponential backoff for Cloudflare Tunnel hiccups.
+    Uses resilient REST RPC with automatic exponential backoff on Cloudflare Tunnel hiccups.
     """
     if not polished_records:
         return {"success": True, "count": 0}
     
-    supabase = get_supabase_client()
+    res = call_supabase_rpc("scraper_upsert_japanese_videos", {"items": polished_records}, retries=retries)
+    if res is not None:
+        return res
+
+    # Fallback to supabase-py client if available
     for attempt in range(retries):
         try:
+            supabase = get_supabase_client()
             response = supabase.rpc("scraper_upsert_japanese_videos", {"items": polished_records}).execute()
             return response.data
         except Exception as e:
             if attempt == retries - 1:
-                print(f"[!] Supabase upsert batch failed after {retries} attempts: {e}")
+                print(f"[!] Supabase Japanese JAV upsert batch failed after {retries} attempts: {e}")
                 return {"success": False, "error": str(e), "count": 0}
             wait_time = (attempt + 1) * 3
             print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")

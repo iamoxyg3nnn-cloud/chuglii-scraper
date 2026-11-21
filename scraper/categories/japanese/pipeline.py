@@ -241,13 +241,14 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
         if proxy:
             kwargs["proxies"] = {"http": proxy, "https": proxy}
         res = session.get(detail_url, **kwargs)
-        if res.status_code != 200 or len(res.text) <= 5000:
-            if not proxy:
-                proxy = GLOBAL_PROXY_POOL.get_proxy()
-                if proxy:
-                    kwargs["proxies"] = {"http": proxy, "https": proxy}
-                    res = session.get(detail_url, **kwargs)
-        if res.status_code != 200:
+        if res.status_code != 200 or len(res.text) <= 5000 or "Just a moment..." in res.text:
+            if proxy:
+                GLOBAL_PROXY_POOL.report_failure(proxy)
+            proxy = GLOBAL_PROXY_POOL.get_proxy()
+            if proxy:
+                kwargs["proxies"] = {"http": proxy, "https": proxy}
+                res = session.get(detail_url, **kwargs)
+        if res.status_code != 200 or "Just a moment..." in res.text:
             return {"servers": []}
 
         soup = BeautifulSoup(res.text, "html.parser")
@@ -294,12 +295,22 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
             if "lulu" in n or "luc" in n: return 2
             return 3
 
-        servers.sort(key=locker_rank)
+        # Deduplicate server mirrors by cleaned embed URL
+        seen_embeds = set()
+        deduped_servers = []
+        for s in servers:
+            clean_url = s.get("embed_url", "").split("#")[0].strip()
+            if clean_url and clean_url.startswith("http") and clean_url not in seen_embeds:
+                seen_embeds.add(clean_url)
+                s["embed_url"] = clean_url
+                deduped_servers.append(s)
+
+        deduped_servers.sort(key=locker_rank)
         tags = [a.get_text(strip=True).lower() for a in soup.select(".tags a, .cats a")]
         actors = [a.get_text(strip=True) for a in soup.select(".cast a, a[href*='/cast/']")]
 
         return {
-            "servers": servers,
+            "servers": deduped_servers,
             "tags": list(set(tags)),
             "actors": list(set(actors))
         }
@@ -360,13 +371,19 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                 kwargs["proxies"] = {"http": current_proxy, "https": current_proxy}
 
             res = session.get(url, **kwargs)
-            if res.status_code == 200 and len(res.text) > 15000:
+            is_cf_challenge = (
+                res.status_code in (403, 503) or
+                "Just a moment..." in res.text or
+                "challenge-platform" in res.text or
+                "cf-chl" in res.text
+            )
+            if res.status_code == 200 and not is_cf_challenge:
                 soup = BeautifulSoup(res.text, "html.parser")
                 cards = soup.select(".post")
                 p_info = f" (via proxy {current_proxy})" if current_proxy else " (direct)"
                 print(f"    Found {len(cards)} video cards{p_info}")
                 break
-            elif res.status_code in (403, 429, 500, 502, 503) or len(res.text) <= 15000:
+            elif is_cf_challenge or res.status_code in (429, 500, 502):
                 title_m = re.search(r'<title>(.*?)</title>', res.text, re.IGNORECASE)
                 title_str = title_m.group(1).strip() if title_m else f"HTTP {res.status_code}"
                 cf_ray = res.headers.get("cf-ray", "none")

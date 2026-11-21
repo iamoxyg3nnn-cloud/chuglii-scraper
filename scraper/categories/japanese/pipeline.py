@@ -32,6 +32,7 @@ for p in [str(CURRENT_DIR), str(SCRAPER_DIR), str(PROJECT_ROOT)]:
         sys.path.insert(0, p)
 
 from scraper.categories.japanese.polish import polish_supjav_record
+from scraper.proxy_pool import GLOBAL_PROXY_POOL
 from scraper.db import (
     upsert_japanese_videos_batch,
     get_japanese_videos,
@@ -188,7 +189,7 @@ def save_known_post_ids(known_ids: Set[str]) -> None:
 
 # ─── Detail Scraper & Embed Resolver ─────────────────────────────────────────
 
-def resolve_server_embed(session: requests.Session, data_link: str) -> Optional[str]:
+def resolve_server_embed(session: requests.Session, data_link: str, proxy: Optional[str] = None) -> Optional[str]:
     """
     Decodes SupJav reverse-hex data-link via supremejav.php?c=
     and captures the HTTP 302 redirect location.
@@ -200,7 +201,10 @@ def resolve_server_embed(session: requests.Session, data_link: str) -> Optional[
     url = f"https://lk1.supremejav.com/supjav.php?c={rev_link}"
     for attempt in range(2):
         try:
-            res = session.get(url, headers={"Referer": "https://supjav.com/"}, allow_redirects=False, timeout=8)
+            kwargs = {"headers": {"Referer": "https://supjav.com/"}, "allow_redirects": False, "timeout": 8}
+            if proxy:
+                kwargs["proxies"] = {"http": proxy, "https": proxy}
+            res = session.get(url, **kwargs)
             loc = res.headers.get("location")
             if loc and loc.startswith("http"):
                 return loc
@@ -209,13 +213,22 @@ def resolve_server_embed(session: requests.Session, data_link: str) -> Optional[
                 time.sleep(0.4)
     return None
 
-def scrape_detail_page(session: requests.Session, detail_url: str) -> Dict[str, Any]:
+def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Optional[str] = None) -> Dict[str, Any]:
     """
     Scrapes detail page to extract ONLY working server mirrors (VOE HD, VidSpeed, LuluStream).
     Skips unworkable hosts (Streamtape, EarnVids) before making any network calls.
     """
     try:
-        res = session.get(detail_url, headers={"Referer": "https://supjav.com/"}, timeout=12)
+        kwargs = {"headers": {"Referer": "https://supjav.com/"}, "timeout": 12}
+        if proxy:
+            kwargs["proxies"] = {"http": proxy, "https": proxy}
+        res = session.get(detail_url, **kwargs)
+        if res.status_code != 200 or len(res.text) <= 5000:
+            if not proxy:
+                proxy = GLOBAL_PROXY_POOL.get_proxy()
+                if proxy:
+                    kwargs["proxies"] = {"http": proxy, "https": proxy}
+                    res = session.get(detail_url, **kwargs)
         if res.status_code != 200:
             return {"servers": []}
 
@@ -234,7 +247,7 @@ def scrape_detail_page(session: requests.Session, detail_url: str) -> Dict[str, 
                     friendly_name = WORKING_SERVER_MAP[raw_name]
                     full_srv_name = f"{friendly_name}{part_label}"
                     data_link = btn.get("data-link", "")
-                    resolved_url = resolve_server_embed(session, data_link)
+                    resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
                     if resolved_url:
                         servers.append({
                             "name": full_srv_name,
@@ -248,7 +261,7 @@ def scrape_detail_page(session: requests.Session, detail_url: str) -> Dict[str, 
 
                 friendly_name = WORKING_SERVER_MAP[raw_name]
                 data_link = btn.get("data-link", "")
-                resolved_url = resolve_server_embed(session, data_link)
+                resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
                 if resolved_url:
                     servers.append({
                         "name": friendly_name,
@@ -275,7 +288,7 @@ def scrape_detail_page(session: requests.Session, detail_url: str) -> Dict[str, 
     except Exception as e:
         return {"servers": []}
 
-def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3) -> List[Dict[str, Any]]:
+def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3, proxy: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Enriches a list of items concurrently using a managed thread pool.
     Each thread owns its own session with Chrome impersonation.
@@ -283,10 +296,12 @@ def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3)
     if not items:
         return []
 
+    active_proxy = proxy or GLOBAL_PROXY_POOL.get_proxy()
+
     enriched = []
     def worker(item):
         session = create_session()
-        detail_data = scrape_detail_page(session, item["detail_url"])
+        detail_data = scrape_detail_page(session, item["detail_url"], proxy=active_proxy)
         item["servers"] = detail_data.get("servers", [])
         item["tags"] = detail_data.get("tags", [])
         item["actors"] = detail_data.get("actors", [])
@@ -307,7 +322,7 @@ def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3)
 # ─── Listing Scraper ─────────────────────────────────────────────────────────
 
 def scrape_listing_page(session: requests.Session, page_num: int = 1, category: str = "uncensored-jav") -> Optional[List[Dict[str, Any]]]:
-    """Scrapes a single page of video cards from SupJav. Returns None on network/block failure."""
+    """Scrapes a single page of video cards from SupJav. Auto-rotates validated free proxies if challenged."""
     cfg = CATEGORIES_CONFIG.get(category, {"url_path": f"/category/{category}"})
     base_path = cfg["url_path"]
 
@@ -318,37 +333,44 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
 
     print(f"[*] Fetching Listing: {url}")
     cards = []
-    for attempt in range(3):
+    current_proxy = None
+
+    for attempt in range(4):
         try:
-            res = session.get(url, timeout=15)
-            if res.status_code == 200:
+            kwargs = {"timeout": 15}
+            if current_proxy:
+                kwargs["proxies"] = {"http": current_proxy, "https": current_proxy}
+
+            res = session.get(url, **kwargs)
+            if res.status_code == 200 and len(res.text) > 15000:
                 soup = BeautifulSoup(res.text, "html.parser")
                 cards = soup.select(".post")
-                print(f"    Found {len(cards)} video cards")
+                p_info = f" (via proxy {current_proxy})" if current_proxy else " (direct)"
+                print(f"    Found {len(cards)} video cards{p_info}")
                 break
-            elif res.status_code in (403, 429, 500, 502, 503):
+            elif res.status_code in (403, 429, 500, 502, 503) or len(res.text) <= 15000:
                 title_m = re.search(r'<title>(.*?)</title>', res.text, re.IGNORECASE)
                 title_str = title_m.group(1).strip() if title_m else f"HTTP {res.status_code}"
                 cf_ray = res.headers.get("cf-ray", "none")
-                wait_sec = 2.0 * (attempt + 1)
-                fallback_imp = "safari15_5" if attempt % 2 == 1 else "chrome124"
-                print(f"    [!] Pacing alert ({res.status_code}: {title_str} | CF-Ray: {cf_ray}) on {url}, rotating TLS profile to {fallback_imp} and waiting {wait_sec}s...")
-                session = create_session(impersonate=fallback_imp)
-                warm_up_session(session)
-                time.sleep(wait_sec)
+
+                if current_proxy:
+                    GLOBAL_PROXY_POOL.report_failure(current_proxy)
+
+                current_proxy = GLOBAL_PROXY_POOL.get_proxy()
+                print(f"    [!] Cloudflare challenge ({res.status_code}: {title_str} | CF-Ray: {cf_ray}). Engaging auto-proxy: {current_proxy}...")
+                session = create_session(impersonate="chrome124")
+                time.sleep(1.0)
             else:
                 print(f"    [!] HTTP error {res.status_code} on {url}")
                 return None
         except Exception as e:
-            wait_sec = 2.0 * (attempt + 1)
-            if attempt < 2:
-                print(f"    [!] Request glitch ({e}), retrying in {wait_sec}s...")
-                time.sleep(wait_sec)
-            else:
-                print(f"    [!] Request failed for {url}: {e}")
-                return None
+            if current_proxy:
+                GLOBAL_PROXY_POOL.report_failure(current_proxy)
+            current_proxy = GLOBAL_PROXY_POOL.get_proxy()
+            print(f"    [!] Connection glitch ({e}), switching to proxy: {current_proxy}...")
+            time.sleep(1.5)
     else:
-        print(f"    [!] Could not bypass Cloudflare protection for {url} after 3 attempts.")
+        print(f"    [!] Could not bypass Cloudflare protection for {url} after 4 attempts.")
         return None
 
     items = []

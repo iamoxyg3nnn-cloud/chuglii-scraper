@@ -1,0 +1,96 @@
+name: Chuglii Multi-Site Auto Scraper Fleet
+run-name: Auto-Scraper Fleet ${{ github.event.inputs.triggered_by && format('({0})', github.event.inputs.triggered_by) || '(scheduled)' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: 'Source of the trigger'
+        required: false
+        default: 'manual'
+      session_minutes:
+        description: 'Daemon session duration in minutes (max ~320 for GitHub Actions)'
+        required: false
+        default: '300'
+      interval_seconds:
+        description: 'Interval between scan cycles in seconds (default: 900 = 15m)'
+        required: false
+        default: '900'
+  schedule:
+    # Fallback watchdog trigger every 6 hours in case self-chaining misses or is interrupted
+    - cron: '0 */6 * * *'
+
+# Strict Anti-Queue Concurrency: cancel any older/stuck run immediately when a new one starts
+concurrency:
+  group: scrapers-auto-sync
+  cancel-in-progress: true
+
+jobs:
+  scrape-fleet:
+    name: Scrape Viral MMS & Japanese JAV
+    runs-on: ubuntu-latest
+    timeout-minutes: 355 # 5h55m (under GitHub's 360m hard limit)
+
+    permissions:
+      contents: read
+      actions: write # Required for self-chaining workflow dispatch
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://supabase.chuglii.in' }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Scraper Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+
+      - name: Run Unified Human-Adaptive Scraper Daemon
+        id: scraper-daemon
+        env:
+          SESSION_MINS: ${{ github.event.inputs.session_minutes || '300' }}
+          INTERVAL_SECS: ${{ github.event.inputs.interval_seconds || '900' }}
+        run: |
+          echo "=========================================================="
+          echo "Starting Unified Multi-Site Scraper Fleet"
+          echo "Sites: MMSVibeX (Viral MMS) + SupJav (Japanese JAV)"
+          echo "Mode: 24/7 Daemon with Adaptive Human Politeness"
+          echo "Session Duration: ${SESSION_MINS} minutes"
+          echo "Scan Interval:    ${INTERVAL_SECS} seconds"
+          echo "=========================================================="
+          
+          python scraper/unified_scraper.py \
+            --daemon \
+            --session-minutes "$SESSION_MINS" \
+            --interval "$INTERVAL_SECS" \
+            --workers 3
+
+      - name: Autotrigger successor run without queuing
+        id: self-chain
+        if: ${{ always() && steps.scraper-daemon.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo ""
+          echo "+=============================================================+"
+          echo "|  SESSION COMPLETED CLEANLY - DISPATCHING SUCCESSOR          |"
+          echo "+=============================================================+"
+          
+          # Dispatches successor run. With cancel-in-progress: true, there is zero queuing backlog.
+          gh workflow run scrapers-auto-sync.yml \
+            --ref "${{ github.ref_name }}" \
+            -f triggered_by="self-chain" \
+            -f session_minutes="${{ github.event.inputs.session_minutes || '300' }}" \
+            -f interval_seconds="${{ github.event.inputs.interval_seconds || '900' }}" || true
+            
+          echo "[✓] Successor workflow dispatched. Handoff complete."

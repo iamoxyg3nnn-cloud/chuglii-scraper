@@ -56,21 +56,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
 
-      - name: Setup Cloudflare WARP Consumer Egress
-        continue-on-error: true
+      - name: Verify Runner Egress Network
         run: |
-          echo "[*] Setting up Cloudflare WARP client for clean consumer network egress..."
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list
-          sudo apt-get update -qq || true
-          sudo apt-get install -y -qq cloudflare-warp || true
-          sudo systemctl start warp-svc || true
-          sleep 2
-          warp-cli --accept-tos registration new || warp-cli --accept-tos register || true
-          warp-cli --accept-tos mode warp || true
-          warp-cli --accept-tos connect || true
-          sleep 3
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip|warp|loc" || true
+          echo "[*] Runner Egress Network Profile:"
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip|loc|warp" || true
 
       - name: Run Unified Human-Adaptive Scraper Daemon
         id: scraper-daemon

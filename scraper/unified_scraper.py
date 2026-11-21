@@ -39,6 +39,7 @@ for p in [str(CURRENT_DIR), str(PROJECT_ROOT)]:
 from scraper.db import get_supabase_client
 from scraper.categories.japanese.pipeline import (
     create_session as create_japanese_session,
+    warm_up_session as warm_up_japanese_session,
     scrape_listing_page as scrape_japanese_listing,
     enrich_items_concurrently as enrich_japanese_items,
     polish_supjav_record,
@@ -94,6 +95,7 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3) -> int:
     known_ids = load_known_post_ids()
     checkpoint = load_checkpoint()
     session = create_japanese_session()
+    warm_up_japanese_session(session)
     new_ingested = 0
 
     for cat in JAV_CATEGORIES:
@@ -101,10 +103,14 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3) -> int:
         try:
             for p in range(1, pages + 1):
                 items = scrape_japanese_listing(session, page_num=p, category=cat)
+                if items is None:
+                    log(f"    Page {p}: [!] Cloudflare challenge encountered on [{cat}]. Backing off.")
+                    continue
+
                 new_items = [itm for itm in items if itm["source_post_id"] not in known_ids]
 
                 if not new_items:
-                    log(f"    Page {p}: Up to date (0 new releases)")
+                    log(f"    Page {p}: Up to date (all {len(items)} releases already indexed)")
                     continue
 
                 log(f"    Page {p}: Found {len(new_items)} new releases! Resolving working mirrors...")

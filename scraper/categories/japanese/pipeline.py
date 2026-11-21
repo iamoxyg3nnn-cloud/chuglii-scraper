@@ -87,10 +87,16 @@ DEFAULT_CATEGORIES = ["uncensored-jav", "amateur", "censored-jav", "reducing-mos
 # ─── Session Factory ─────────────────────────────────────────────────────────
 
 def create_session(impersonate: str = "chrome124") -> requests.Session:
-    """Creates a TLS-impersonated browser session with authentic headers."""
-    session = requests.Session(impersonate=impersonate)
-    session.headers["Referer"] = "https://supjav.com/"
-    return session
+    """Creates a clean TLS-impersonated browser session with authentic, untouched headers."""
+    return requests.Session(impersonate=impersonate)
+
+def warm_up_session(session: requests.Session) -> bool:
+    """Establishes natural browser navigation by hitting homepage first to warm up cookies."""
+    try:
+        r = session.get(f"{BASE_URL}/", timeout=12)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 # ─── Checkpoint & Known IDs State Management ─────────────────────────────────
 
@@ -300,8 +306,8 @@ def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3)
 
 # ─── Listing Scraper ─────────────────────────────────────────────────────────
 
-def scrape_listing_page(session: requests.Session, page_num: int = 1, category: str = "uncensored-jav") -> List[Dict[str, Any]]:
-    """Scrapes a single page of video cards from SupJav."""
+def scrape_listing_page(session: requests.Session, page_num: int = 1, category: str = "uncensored-jav") -> Optional[List[Dict[str, Any]]]:
+    """Scrapes a single page of video cards from SupJav. Returns None on network/block failure."""
     cfg = CATEGORIES_CONFIG.get(category, {"url_path": f"/category/{category}"})
     base_path = cfg["url_path"]
 
@@ -311,23 +317,28 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
         url = f"{BASE_URL}{base_path}" if page_num == 1 else f"{BASE_URL}{base_path}/page/{page_num}"
 
     print(f"[*] Fetching Listing: {url}")
+    cards = []
     for attempt in range(3):
         try:
-            res = session.get(url, timeout=12)
+            res = session.get(url, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 cards = soup.select(".post")
                 print(f"    Found {len(cards)} video cards")
                 break
             elif res.status_code in (403, 429, 500, 502, 503):
-                wait_sec = 2.5 * (attempt + 1)
+                title_m = re.search(r'<title>(.*?)</title>', res.text, re.IGNORECASE)
+                title_str = title_m.group(1).strip() if title_m else f"HTTP {res.status_code}"
+                cf_ray = res.headers.get("cf-ray", "none")
+                wait_sec = 2.0 * (attempt + 1)
                 fallback_imp = "safari15_5" if attempt % 2 == 1 else "chrome124"
-                print(f"    [!] Pacing alert ({res.status_code}) on {url}, rotating TLS profile to {fallback_imp} and waiting {wait_sec}s...")
+                print(f"    [!] Pacing alert ({res.status_code}: {title_str} | CF-Ray: {cf_ray}) on {url}, rotating TLS profile to {fallback_imp} and waiting {wait_sec}s...")
                 session = create_session(impersonate=fallback_imp)
+                warm_up_session(session)
                 time.sleep(wait_sec)
             else:
                 print(f"    [!] HTTP error {res.status_code} on {url}")
-                return []
+                return None
         except Exception as e:
             wait_sec = 2.0 * (attempt + 1)
             if attempt < 2:
@@ -335,9 +346,10 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                 time.sleep(wait_sec)
             else:
                 print(f"    [!] Request failed for {url}: {e}")
-                return []
+                return None
     else:
-        return []
+        print(f"    [!] Could not bypass Cloudflare protection for {url} after 3 attempts.")
+        return None
 
     items = []
     for card in cards:
@@ -400,6 +412,7 @@ def ingest_category_pages(
     polishing, and batch upserting into Supabase.
     """
     session = create_session()
+    warm_up_session(session)
     cat_info = CATEGORIES_CONFIG.get(category, {"name": category})
     print("\n" + "=" * 65)
     print(f"Scraping [{cat_info['name']}] | Pages: {from_page} to {to_page} | Workers: {workers}")

@@ -70,30 +70,45 @@ def adaptive_backoff(attempt: int, base: float = 3.0, max_wait: float = 30.0) ->
 
 # ─── Viral MMS Ingestion Task ────────────────────────────────────────────────
 
-def run_viral_mms_sync(pages: int = 1) -> int:
-    """Runs Viral MMS ingestion pipeline for the newest releases."""
+def run_viral_mms_sync(pages: int = 1, checkpoint: Optional[Dict[str, Any]] = None) -> int:
+    """Runs Viral MMS ingestion: checks Page 1 for new releases, then advances historical cursor."""
     log("\n" + "=" * 65)
-    log(f"  [FEED 1/2] Viral MMS Scraper | Pages: {pages}")
+    log(f"  [FEED 1/2] Viral MMS Scraper | Head: Page 1 + Cursor Backfill")
     log("=" * 65)
     try:
         from scraper.pipeline import run_scraper_pipeline
-        count = run_scraper_pipeline(pages=pages, filter_mode="latest", category=None, enrich_details=False)
+        # 1. New incoming leaks (Page 1)
+        count = run_scraper_pipeline(pages=1, start_page=1, filter_mode="latest", category=None, enrich_details=False) or 0
+
+        # 2. Advance historical backfill cursor if checkpoint provided
+        if checkpoint:
+            mms_state = checkpoint.setdefault("viral-mms", {"current_page": 2, "max_pages": 150})
+            curr_cursor = mms_state.get("current_page", 2)
+            if curr_cursor <= mms_state.get("max_pages", 150):
+                log(f"  [*] Viral MMS Progress Tracing: Crawling historical page {curr_cursor}...")
+                hist_count = run_scraper_pipeline(pages=1, start_page=curr_cursor, filter_mode="latest", category=None, enrich_details=False) or 0
+                count += hist_count
+                mms_state["current_page"] = curr_cursor + 1
+                save_checkpoint(checkpoint)
+                log(f"  [✓] Viral MMS Checkpoint advanced: Cursor is now on page {curr_cursor + 1}")
+
         log(f"  [✓] Viral MMS sync complete. Videos processed: {count}")
-        return count or 0
+        return count
     except Exception as e:
         log(f"  [!] Viral MMS sync error: {e}")
         return 0
 
 # ─── Japanese JAV Ingestion Task ─────────────────────────────────────────────
 
-def run_japanese_jav_sync(pages: int = 1, workers: int = 3) -> int:
-    """Runs SupJav ingestion for newest releases across all 5 categories."""
+def run_japanese_jav_sync(pages: int = 1, workers: int = 3, checkpoint: Optional[Dict[str, Any]] = None) -> int:
+    """Runs SupJav ingestion: checks Page 1 for new releases, then advances historical cursor."""
     log("\n" + "=" * 65)
     log(f"  [FEED 2/2] SupJav Japanese JAV Scraper | Working Mirrors Only")
     log("=" * 65)
 
     known_ids = load_known_post_ids()
-    checkpoint = load_checkpoint()
+    if not checkpoint:
+        checkpoint = load_checkpoint()
     session = create_japanese_session()
     warm_up_japanese_session(session)
     new_ingested = 0
@@ -101,44 +116,69 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3) -> int:
     for cat in JAV_CATEGORIES:
         log(f"\n  Checking category: [{cat}]")
         try:
-            for p in range(1, pages + 1):
-                items = scrape_japanese_listing(session, page_num=p, category=cat)
-                if items is None:
-                    log(f"    Page {p}: [!] Cloudflare challenge encountered on [{cat}]. Backing off.")
-                    continue
+            # 1. Check Page 1 for brand new releases
+            p1_items = scrape_japanese_listing(session, page_num=1, category=cat)
+            if p1_items:
+                new_p1 = [itm for itm in p1_items if itm["source_post_id"] not in known_ids]
+                if new_p1:
+                    log(f"    [+] Page 1: Found {len(new_p1)} brand new releases! Resolving mirrors...")
+                    enriched = enrich_japanese_items(new_p1, max_workers=workers)
+                    if enriched:
+                        records = []
+                        for itm in enriched:
+                            srvs = [s["name"] for s in itm.get("servers", [])]
+                            log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
+                            polished = polish_supjav_record(itm)
+                            records.append(polished)
+                            known_ids.add(itm["source_post_id"])
+                        res = upsert_japanese_videos_batch(records)
+                        log(f"      [✓] Batch upserted {len(records)} videos ({res})")
+                        new_ingested += len(records)
+                        save_known_post_ids(known_ids)
+                else:
+                    log(f"    Page 1: Up to date (all {len(p1_items)} releases already indexed)")
 
-                new_items = [itm for itm in items if itm["source_post_id"] not in known_ids]
+            # 2. Advance historical backfill cursor
+            cat_state = checkpoint["categories"].setdefault(cat, {"current_page": 2, "max_pages": 100, "completed": False})
+            curr_cursor = cat_state.get("current_page", 2)
+            if curr_cursor <= 1:
+                curr_cursor = 2
+                cat_state["current_page"] = 2
 
-                if not new_items:
-                    log(f"    Page {p}: Up to date (all {len(items)} releases already indexed)")
-                    continue
+            if not cat_state.get("completed", False):
+                log(f"    [*] Progress Tracing: Crawling historical page {curr_cursor} for [{cat}]...")
+                hist_items = scrape_japanese_listing(session, page_num=curr_cursor, category=cat)
+                if hist_items:
+                    new_hist = [itm for itm in hist_items if itm["source_post_id"] not in known_ids]
+                    if new_hist:
+                        log(f"    [+] Historical Page {curr_cursor}: Found {len(new_hist)} unindexed videos! Resolving mirrors...")
+                        enriched_hist = enrich_japanese_items(new_hist, max_workers=workers)
+                        if enriched_hist:
+                            records = []
+                            for itm in enriched_hist:
+                                srvs = [s["name"] for s in itm.get("servers", [])]
+                                log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
+                                polished = polish_supjav_record(itm)
+                                records.append(polished)
+                                known_ids.add(itm["source_post_id"])
+                            res = upsert_japanese_videos_batch(records)
+                            log(f"      [✓] Batch upserted {len(records)} videos ({res})")
+                            new_ingested += len(records)
+                            save_known_post_ids(known_ids)
+                    else:
+                        log(f"    Historical Page {curr_cursor}: All {len(hist_items)} releases already indexed.")
 
-                log(f"    Page {p}: Found {len(new_items)} new releases! Resolving working mirrors...")
-                enriched = enrich_japanese_items(new_items, max_workers=workers)
-
-                if enriched:
-                    records = []
-                    for itm in enriched:
-                        srvs = [s["name"] for s in itm.get("servers", [])]
-                        log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
-                        polished = polish_supjav_record(itm)
-                        records.append(polished)
-                        known_ids.add(itm["source_post_id"])
-
-                    res = upsert_japanese_videos_batch(records)
-                    log(f"      [✓] Batch upserted {len(records)} videos ({res})")
-                    new_ingested += len(records)
-                    save_known_post_ids(known_ids)
-                    checkpoint["stats"]["total_ingested"] = checkpoint["stats"].get("total_ingested", 0) + len(records)
+                    # Advance cursor
+                    cat_state["current_page"] = curr_cursor + 1
                     save_checkpoint(checkpoint)
-
-                human_jitter(1.0, 2.0)
+                    log(f"    [✓] Progress saved: [{cat}] cursor advanced to page {curr_cursor + 1}")
+                elif hist_items is None:
+                    log(f"    [!] Skipping cursor advance for [{cat}] due to Cloudflare block.")
 
         except Exception as e:
             log(f"    [!] Error checking {cat}: {e}")
 
-        # Human-like pause between category switches
-        human_jitter(1.5, 3.0)
+        human_jitter(1.0, 2.0)
 
     log(f"\n  [✓] Japanese JAV sync complete. New videos added: {new_ingested}")
     return new_ingested
@@ -153,14 +193,16 @@ def run_unified_sync_cycle(mms_pages: int = 1, jav_pages: int = 1, workers: int 
     log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp}")
     log("#" * 65)
 
-    # 1. Scrape Viral MMS
-    mms_count = run_viral_mms_sync(pages=mms_pages)
+    checkpoint = load_checkpoint()
+
+    # 1. Scrape Viral MMS (Head + Cursor Backfill)
+    mms_count = run_viral_mms_sync(pages=mms_pages, checkpoint=checkpoint)
 
     # Human transition pause
-    human_jitter(2.0, 4.0)
+    human_jitter(2.0, 3.5)
 
-    # 2. Scrape Japanese JAV
-    jav_count = run_japanese_jav_sync(pages=jav_pages, workers=workers)
+    # 2. Scrape Japanese JAV (Head + Cursor Backfill)
+    jav_count = run_japanese_jav_sync(pages=jav_pages, workers=workers, checkpoint=checkpoint)
 
     elapsed = time.time() - t0
     log("\n" + "#" * 65)
@@ -175,14 +217,14 @@ def run_unified_sync_cycle(mms_pages: int = 1, jav_pages: int = 1, workers: int 
 
 def run_continuous_daemon(
     session_minutes: int = 300,
-    interval_seconds: int = 900,
+    interval_seconds: int = 60,
     workers: int = 3
 ) -> None:
     """
     Runs a continuous multi-site scraping daemon.
     Designed for GitHub Actions 6-hour runners:
     Runs for ~session_minutes (default 300 min / 5 hours),
-    checking both sites every interval_seconds (default 15 min).
+    checking both sites every interval_seconds (default 60s).
     Provides real-time heartbeat countdown logs so progress is always visible.
     When time ends, exits cleanly to allow handoff.
     """
@@ -201,7 +243,7 @@ def run_continuous_daemon(
         elapsed = time.time() - start_time
         remaining = max_seconds - elapsed
 
-        if remaining <= (interval_seconds + 60):
+        if remaining <= (interval_seconds + 30):
             log(f"\n[HANDOFF] Session limit reached ({elapsed / 60:.1f}m / {session_minutes}m).")
             log("[HANDOFF] Exiting cleanly so successor job can run without queuing.")
             break
@@ -212,18 +254,16 @@ def run_continuous_daemon(
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
-        # Human-jittered sleep between cycles with active live heartbeats
-        jittered_sleep = interval_seconds + random.uniform(-15.0, 25.0)
-        jittered_sleep = max(30.0, jittered_sleep)
+        # Human-jittered sleep between cycles (~60s default) with active live heartbeats
+        jittered_sleep = max(45.0, interval_seconds + random.uniform(-5.0, 15.0))
         sleep_total = int(jittered_sleep)
-        log(f"\n[*] Cycle #{cycle} complete. Entering polite sleep for {sleep_total // 60}m {sleep_total % 60}s...")
+        log(f"\n[*] Cycle #{cycle} complete. Entering polite sleep for {sleep_total}s...")
         cycle += 1
 
-        # Print active heartbeat every 60s so GitHub Actions log is never silent
-        heartbeat_interval = 60
+        # Print active heartbeat every 15s so GitHub Actions log is always live
+        heartbeat_interval = 15
         for remaining_sec in range(sleep_total, 0, -heartbeat_interval):
-            m, s = divmod(remaining_sec, 60)
-            log(f"    [Heartbeat] Next scan in {m}m {s:02d}s... Daemon active & healthy.")
+            log(f"    [Heartbeat] Next scan in {remaining_sec}s... Daemon active & healthy.")
             time.sleep(min(heartbeat_interval, remaining_sec))
 
 # ─── CLI Entrypoint ──────────────────────────────────────────────────────────
@@ -233,7 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--sync", action="store_true", help="Run a single one-shot sync cycle and exit")
     parser.add_argument("--daemon", action="store_true", help="Run in continuous daemon mode")
     parser.add_argument("--session-minutes", type=int, default=300, help="Max session duration in minutes (default: 300)")
-    parser.add_argument("--interval", type=int, default=900, help="Seconds between scan cycles (default: 900)")
+    parser.add_argument("--interval", type=int, default=60, help="Seconds between scan cycles (default: 60)")
     parser.add_argument("--workers", type=int, default=3, help="Concurrent workers for detail resolver (default: 3)")
     parser.add_argument("--mms-pages", type=int, default=1, help="Pages of Viral MMS to scrape")
     parser.add_argument("--jav-pages", type=int, default=1, help="Pages of Japanese JAV to scrape per category")

@@ -154,17 +154,18 @@ def scrape_listing_page(
 
 def run_scraper_pipeline(
     pages: int = 1,
+    start_page: int = 1,
     filter_mode: str = "latest",
     category: Optional[str] = None,
     enrich_details: bool = False
 ) -> int:
     """Orchestrates extraction, polishing, and batch upsert into Supabase."""
     print("=" * 65)
-    print(f"Viral MMS Ingestion | Mode: {filter_mode} | Pages: {pages}")
+    print(f"Viral MMS Ingestion | Mode: {filter_mode} | Pages: {start_page} to {start_page + pages - 1}")
     print("=" * 65)
 
     total_upserted = 0
-    for p in range(1, pages + 1):
+    for p in range(start_page, start_page + pages):
         items = scrape_listing_page(p, filter_mode=filter_mode, category=category)
         if not items:
             break

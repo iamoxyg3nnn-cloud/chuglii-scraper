@@ -71,26 +71,37 @@ def adaptive_backoff(attempt: int, base: float = 3.0, max_wait: float = 30.0) ->
 # ─── Viral MMS Ingestion Task ────────────────────────────────────────────────
 
 def run_viral_mms_sync(pages: int = 1, checkpoint: Optional[Dict[str, Any]] = None) -> int:
-    """Runs Viral MMS ingestion: checks Page 1 for new releases, then advances historical cursor."""
+    """Runs Viral MMS ingestion: checks Page 1 for new releases, then advances historical cursor in Supabase."""
     log("\n" + "=" * 65)
     log(f"  [FEED 1/2] Viral MMS Scraper | Head: Page 1 + Cursor Backfill")
     log("=" * 65)
     try:
         from scraper.pipeline import run_scraper_pipeline
+        from scraper.db import get_scraper_checkpoint, set_scraper_checkpoint
+
         # 1. New incoming leaks (Page 1)
         count = run_scraper_pipeline(pages=1, start_page=1, filter_mode="latest", category=None, enrich_details=False) or 0
 
-        # 2. Advance historical backfill cursor if checkpoint provided
-        if checkpoint:
-            mms_state = checkpoint.setdefault("viral-mms", {"current_page": 2, "max_pages": 150})
-            curr_cursor = mms_state.get("current_page", 2)
-            if curr_cursor <= mms_state.get("max_pages", 150):
-                log(f"  [*] Viral MMS Progress Tracing: Crawling historical page {curr_cursor}...")
-                hist_count = run_scraper_pipeline(pages=1, start_page=curr_cursor, filter_mode="latest", category=None, enrich_details=False) or 0
-                count += hist_count
-                mms_state["current_page"] = curr_cursor + 1
+        # 2. Advance historical backfill cursor (Supabase-first)
+        mms_state = get_scraper_checkpoint("viral-mms")
+        if not mms_state or "current_page" not in mms_state:
+            if checkpoint and "viral-mms" in checkpoint:
+                mms_state = checkpoint["viral-mms"]
+            else:
+                mms_state = {"current_page": 2, "max_pages": 150}
+
+        curr_cursor = mms_state.get("current_page", 2)
+        if curr_cursor <= mms_state.get("max_pages", 150):
+            log(f"  [*] Viral MMS Progress Tracing: Crawling historical page {curr_cursor}...")
+            hist_count = run_scraper_pipeline(pages=1, start_page=curr_cursor, filter_mode="latest", category=None, enrich_details=False) or 0
+            count += hist_count
+            mms_state["current_page"] = curr_cursor + 1
+            mms_state["total_ingested"] = mms_state.get("total_ingested", 0) + count
+            set_scraper_checkpoint("viral-mms", mms_state)
+            if checkpoint:
+                checkpoint["viral-mms"] = mms_state
                 save_checkpoint(checkpoint)
-                log(f"  [✓] Viral MMS Checkpoint advanced: Cursor is now on page {curr_cursor + 1}")
+            log(f"  [✓] Viral MMS Checkpoint: Cursor advanced to page {curr_cursor + 1} (Saved to Supabase)")
 
         log(f"  [✓] Viral MMS sync complete. Videos processed: {count}")
         return count

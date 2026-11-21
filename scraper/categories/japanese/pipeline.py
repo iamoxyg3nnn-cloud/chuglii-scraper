@@ -102,10 +102,28 @@ def warm_up_session(session: requests.Session) -> bool:
 # ─── Checkpoint & Known IDs State Management ─────────────────────────────────
 
 def load_checkpoint() -> Dict[str, Any]:
-    """Loads scraper checkpoint state, or initializes default schema."""
+    """
+    Loads scraper checkpoint state:
+    1. Primary: Fetches latest progress state directly from Supabase (scraper.checkpoints).
+    2. Fallback: Reads local checkpoint.json if Supabase is temporarily unreachable.
+    """
+    try:
+        from scraper.db import get_scraper_checkpoint
+        sb_data = get_scraper_checkpoint("supjav")
+        if sb_data and "categories" in sb_data:
+            print("  [✓] Loaded latest SupJav catalog checkpoint from Supabase.")
+            try:
+                with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+                    json.dump(sb_data, f, indent=2)
+            except Exception:
+                pass
+            return sb_data
+    except Exception as e:
+        print(f"  [!] Note: Supabase checkpoint fetch bypassed ({e}), checking local cache...")
+
     default_state = {
         "categories": {
-            cat: {"current_page": 1, "max_pages": info["default_max"], "completed": False}
+            cat: {"current_page": 2, "max_pages": info["default_max"], "completed": False}
             for cat, info in CATEGORIES_CONFIG.items()
         },
         "stats": {
@@ -117,11 +135,10 @@ def load_checkpoint() -> Dict[str, Any]:
         try:
             with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Ensure all categories exist in saved file
                 for cat, info in CATEGORIES_CONFIG.items():
                     if cat not in data.get("categories", {}):
                         data.setdefault("categories", {})[cat] = {
-                            "current_page": 1,
+                            "current_page": 2,
                             "max_pages": info["default_max"],
                             "completed": False
                         }
@@ -131,18 +148,29 @@ def load_checkpoint() -> Dict[str, Any]:
     return default_state
 
 def save_checkpoint(data: Dict[str, Any]) -> None:
-    """Saves scraper checkpoint state safely to disk."""
+    """
+    Saves scraper checkpoint state:
+    1. Atomically updates Supabase scraper.checkpoints table.
+    2. Mirrors state to local checkpoint.json for offline resilience.
+    """
     try:
         data["stats"]["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        from scraper.db import set_scraper_checkpoint
+        set_scraper_checkpoint("supjav", data)
+    except Exception as e:
+        print(f"    [!] Note: Supabase checkpoint sync skipped ({e}).")
+
+    try:
         with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"[!] Failed to save checkpoint: {e}")
+        print(f"[!] Failed to save local checkpoint: {e}")
 
 def load_known_post_ids() -> Set[str]:
     """
-    Loads known post IDs from disk cache, merging with DB if cache is empty.
-    Allows instant in-memory deduplication (<1ms).
+    Loads known post IDs:
+    1. Primary: Queries Supabase directly via scraper_get_known_post_ids('supjav')
+    2. Local Cache: Merges with known_post_ids.json for ultra-fast in-memory deduplication.
     """
     known_ids: Set[str] = set()
     if KNOWN_IDS_FILE.exists():
@@ -151,31 +179,21 @@ def load_known_post_ids() -> Set[str]:
                 data = json.load(f)
                 if isinstance(data, list):
                     known_ids.update(str(x) for x in data)
-        except Exception as e:
-            print(f"[!] Warning reading {KNOWN_IDS_FILE.name}: {e}")
+        except Exception:
+            pass
 
-    # If cache is small or empty, populate from database
-    if len(known_ids) < 20:
-        try:
-            print("[*] Synchronizing known post IDs from Supabase database...")
-            sb = get_supabase_client()
-            offset = 0
-            limit = 1000
-            while True:
-                res = sb.rpc("scraper_get_japanese_videos", {"p_limit": limit, "p_offset": offset}).execute()
-                if not res.data:
-                    break
-                for r in res.data:
-                    pid = r.get("source_post_id")
-                    if pid:
-                        known_ids.add(str(pid))
-                if len(res.data) < limit:
-                    break
-                offset += limit
-            print(f"    [✓] Synced {len(known_ids)} known post IDs from database.")
+    try:
+        from scraper.db import get_scraper_known_post_ids
+        sb_ids = get_scraper_known_post_ids("supjav", limit=25000)
+        if sb_ids:
+            known_ids.update(sb_ids)
+            print(f"  [✓] Synced {len(known_ids)} known post IDs from Supabase.")
             save_known_post_ids(known_ids)
-        except Exception as e:
-            print(f"[!] Note: Could not query DB for initial IDs ({e}). Using local cache.")
+            return known_ids
+    except Exception as e:
+        print(f"  [!] Note: Supabase ID sync bypassed ({e}). Using local cache ({len(known_ids)} IDs).")
+
+    return known_ids
 
     return known_ids
 

@@ -4,7 +4,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import httpx
 from dotenv import load_dotenv
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client
+except ImportError:
+    create_client = None
+    Client = Any
 
 # Find root .env file
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -128,4 +132,50 @@ def get_japanese_videos(source_site: Optional[str] = None, tag: Optional[str] = 
     }
     response = supabase.rpc("scraper_get_japanese_videos", params).execute()
     return response.data
+
+
+# ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
+
+def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, timeout: float = 15.0) -> Any:
+    """Executes a Supabase RPC function via direct REST call with automatic retry."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/{func_name}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "authorization": f"Bearer {SUPABASE_KEY}",
+        "content-type": "application/json; charset=utf-8"
+    }
+    for attempt in range(retries):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                res = client.post(endpoint, json=params or {}, headers=headers)
+                if res.status_code == 200:
+                    return res.json()
+                elif res.status_code in (502, 530, 504):
+                    time.sleep(1.5 * (attempt + 1))
+        except Exception:
+            time.sleep(1.0)
+    return None
+
+def get_scraper_checkpoint(key: str) -> Dict[str, Any]:
+    """Retrieves current progress checkpoint directly from Supabase scraper.checkpoints."""
+    data = call_supabase_rpc("scraper_get_checkpoint", {"p_key": key})
+    if isinstance(data, dict):
+        return data
+    return {}
+
+def set_scraper_checkpoint(key: str, state: Dict[str, Any]) -> bool:
+    """Persists progress checkpoint atomically into Supabase scraper.checkpoints."""
+    data = call_supabase_rpc("scraper_set_checkpoint", {"p_key": key, "p_state": state})
+    return bool(data and data.get("success"))
+
+def get_scraper_known_post_ids(site: str, limit: int = 25000) -> set:
+    """Retrieves recently indexed post IDs directly from Supabase to prevent duplicate processing."""
+    data = call_supabase_rpc("scraper_get_known_post_ids", {"p_site": site, "p_limit": limit})
+    if isinstance(data, list):
+        return set(str(x) for x in data)
+    return set()
+
+
 

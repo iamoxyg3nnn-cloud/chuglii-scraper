@@ -151,6 +151,49 @@ def get_japanese_videos(source_site: Optional[str] = None, tag: Optional[str] = 
 
 # ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
 
+def is_supabase_healthy(timeout: float = 8.0) -> bool:
+    """Checks whether the Supabase REST endpoint is reachable and returning valid responses."""
+    if not SUPABASE_URL:
+        return False
+    endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/"
+    headers = {
+        "apikey": SUPABASE_KEY or "",
+        "authorization": f"Bearer {SUPABASE_KEY}" if SUPABASE_KEY else "",
+        "accept": "application/json"
+    }
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            res = client.get(endpoint, headers=headers)
+            # HTTP 200, 204, or 401 (auth challenge) indicates server & tunnel are online
+            # HTTP 502, 503, 504, 530 indicates Cloudflare Tunnel down / origin offline
+            return res.status_code in (200, 204, 401)
+    except Exception:
+        return False
+
+def wait_for_supabase(max_wait_seconds: int = 600, poll_interval: int = 15) -> bool:
+    """
+    Blocks and polls until Supabase becomes healthy and reachable.
+    Designed to handle Cloudflare Tunnel (530 / 1033) restarts or runner boot delays gracefully.
+    Returns True when Supabase is online, or False if max_wait_seconds expires.
+    """
+    if is_supabase_healthy():
+        return True
+
+    print(f"\n[⏳] Supabase is offline or starting up (HTTP 530 / Cloudflare Tunnel reconnecting)...", flush=True)
+    print(f"    Entering polite standby. Waiting for Supabase to come online (Max wait: {max_wait_seconds // 60}m)...", flush=True)
+    
+    start_time = time.time()
+    while time.time() - start_time < max_wait_seconds:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start_time)
+        if is_supabase_healthy():
+            print(f"    [✓] Supabase is ONLINE and healthy! (Standby duration: {elapsed}s). Resuming scraper operations.\n", flush=True)
+            return True
+        print(f"    [Heartbeat] Supabase still booting / connecting... ({elapsed}s elapsed / {max_wait_seconds}s max)", flush=True)
+
+    print(f"    [!] Timeout waiting for Supabase after {max_wait_seconds}s. Proceeding with offline resilience.\n", flush=True)
+    return False
+
 def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, timeout: float = 15.0) -> Any:
     """Executes a Supabase RPC function via direct REST call with automatic retry."""
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -168,7 +211,11 @@ def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, r
                 if res.status_code == 200:
                     return res.json()
                 elif res.status_code in (502, 530, 504):
-                    time.sleep(1.5 * (attempt + 1))
+                    if attempt == 0:
+                        # Wait up to 120s for tunnel recovery before next retry
+                        wait_for_supabase(max_wait_seconds=120, poll_interval=10)
+                    else:
+                        time.sleep(2.0 * (attempt + 1))
         except Exception:
             time.sleep(1.0)
     return None

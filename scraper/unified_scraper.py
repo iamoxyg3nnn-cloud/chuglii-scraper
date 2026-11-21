@@ -36,7 +36,7 @@ for p in [str(CURRENT_DIR), str(PROJECT_ROOT)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from scraper.db import get_supabase_client
+from scraper.db import get_supabase_client, wait_for_supabase, is_supabase_healthy
 from scraper.categories.japanese.pipeline import (
     create_session as create_japanese_session,
     warm_up_session as warm_up_japanese_session,
@@ -214,6 +214,9 @@ def run_unified_sync_cycle(mms_pages: int = 1, jav_pages: int = 1, workers: int 
     log("\n" + "#" * 65)
     log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp}")
     log("#" * 65)
+
+    # Supabase Health Gate: Wait up to 10m for database & Cloudflare tunnel to be fully online
+    wait_for_supabase(max_wait_seconds=600, poll_interval=15)
 
     checkpoint = load_checkpoint()
 

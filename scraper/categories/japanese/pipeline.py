@@ -86,15 +86,10 @@ DEFAULT_CATEGORIES = ["uncensored-jav", "amateur", "censored-jav", "reducing-mos
 
 # ─── Session Factory ─────────────────────────────────────────────────────────
 
-def create_session() -> requests.Session:
-    """Creates a TLS-impersonated Chrome session with proper headers."""
-    session = requests.Session(impersonate="chrome124")
-    session.headers.update({
-        "User-Agent": CHROME_UA,
-        "Referer": "https://supjav.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
+def create_session(impersonate: str = "chrome124") -> requests.Session:
+    """Creates a TLS-impersonated browser session with authentic headers."""
+    session = requests.Session(impersonate=impersonate)
+    session.headers["Referer"] = "https://supjav.com/"
     return session
 
 # ─── Checkpoint & Known IDs State Management ─────────────────────────────────
@@ -325,8 +320,10 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                 print(f"    Found {len(cards)} video cards")
                 break
             elif res.status_code in (403, 429, 500, 502, 503):
-                wait_sec = 2.0 * (attempt + 1)
-                print(f"    [!] Pacing alert ({res.status_code}) on {url}, backing off {wait_sec}s...")
+                wait_sec = 2.5 * (attempt + 1)
+                fallback_imp = "safari15_5" if attempt % 2 == 1 else "chrome124"
+                print(f"    [!] Pacing alert ({res.status_code}) on {url}, rotating TLS profile to {fallback_imp} and waiting {wait_sec}s...")
+                session = create_session(impersonate=fallback_imp)
                 time.sleep(wait_sec)
             else:
                 print(f"    [!] HTTP error {res.status_code} on {url}")

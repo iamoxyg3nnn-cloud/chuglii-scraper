@@ -11,6 +11,7 @@ Features:
  - Safe retries with exponential backoff on network/tunnel drops
 """
 
+import os
 import sys
 import re
 import json
@@ -359,7 +360,7 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
                 res_text = scrapling_html
             elif proxy:
                 GLOBAL_PROXY_POOL.report_failure(proxy)
-                proxy = GLOBAL_PROXY_POOL.get_proxy()
+                proxy = os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY")
                 if proxy:
                     kwargs["proxies"] = {"http": proxy, "https": proxy}
                     res = session.get(detail_url, **kwargs)
@@ -448,7 +449,7 @@ def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3,
     if not items:
         return []
 
-    active_proxy = proxy or GLOBAL_PROXY_POOL.get_proxy()
+    active_proxy = proxy or os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY")
 
     enriched = []
     def worker(item):
@@ -523,7 +524,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                 # 2. Secondary fallback: Check configured proxies
                 if current_proxy:
                     GLOBAL_PROXY_POOL.report_failure(current_proxy)
-                current_proxy = GLOBAL_PROXY_POOL.get_proxy()
+                current_proxy = os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY")
                 if current_proxy:
                     print(f"    [!] Retrying with configured proxy: {current_proxy}...")
                     session = create_session(impersonate="chrome124")
@@ -542,7 +543,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
 
             if current_proxy:
                 GLOBAL_PROXY_POOL.report_failure(current_proxy)
-            current_proxy = GLOBAL_PROXY_POOL.get_proxy()
+            current_proxy = os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY")
             time.sleep(1.5)
     else:
         print(f"    [!] Could not bypass Cloudflare protection for {url} after retries.")

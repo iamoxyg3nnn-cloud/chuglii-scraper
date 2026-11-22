@@ -1,20 +1,19 @@
 """
-Source Scraper for PimpBunny (https://pimpbunny.net)
-Extracts rich structured metadata from schema.org VideoObject and VideoJS players.
+Source Scraper for PimpBunny (https://pimpbunny.com)
+Kernel Video Sharing (KVS) platform for OnlyFans / adult content creator leaks.
 """
 import re
 import json
 from typing import List, Dict, Any, Optional
-from scrapling import Fetcher
 
-BASE_URL = "https://pimpbunny.net"
+BASE_URL = "https://pimpbunny.com"
+CATEGORY_URL = f"{BASE_URL}/videos/"
 
 def parse_iso_duration(dur_str: Optional[str]) -> tuple[int, str]:
-    """Parses ISO 8601 duration (e.g. 'PT9M23S' or '09:23') into (seconds, 'MM:SS')."""
+    """Parses ISO 8601 duration (e.g. 'PT0H15M11S' or '15:11') into (seconds, 'MM:SS')."""
     if not dur_str:
         return 600, "10:00"
     
-    # Check PT#M#S pattern
     m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", dur_str)
     if m:
         h = int(m.group(1) or 0)
@@ -27,7 +26,6 @@ def parse_iso_duration(dur_str: Optional[str]) -> tuple[int, str]:
             formatted = f"{m_val:02d}:{s:02d}"
         return total_sec, formatted
 
-    # Check MM:SS pattern
     m2 = re.match(r"(\d+):(\d+)(?::(\d+))?", dur_str.strip())
     if m2:
         parts = [int(p) for p in m2.groups() if p is not None]
@@ -41,56 +39,77 @@ def parse_iso_duration(dur_str: Optional[str]) -> tuple[int, str]:
 
     return 600, "10:00"
 
-def fetch_page(url: str, timeout: int = 25) -> Optional[Any]:
+def fetch_page(url: str, timeout: int = 25) -> Optional[str]:
+    """Fetches page content with realistic Chrome impersonation."""
     try:
-        resp = Fetcher.get(url, timeout=timeout)
-        if resp.status == 200:
-            return resp
+        from curl_cffi import requests
+        r = requests.get(
+            url,
+            headers={"Referer": "https://pimpbunny.com/"},
+            impersonate="chrome124",
+            timeout=timeout
+        )
+        if r.status_code == 200:
+            return r.text
     except Exception:
         pass
     return None
 
 def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
-    url = BASE_URL if page_num <= 1 else f"{BASE_URL}/page/{page_num}/"
-    resp = fetch_page(url)
-    if not resp:
+    """Scrapes video listings from https://pimpbunny.com/videos/"""
+    if page_num <= 1:
+        url = CATEGORY_URL
+    else:
+        url = f"{BASE_URL}/videos/{page_num}/"
+
+    html = fetch_page(url)
+    if not html:
         return [], None
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
 
     items = []
     seen_urls = set()
 
-    for a in resp.css("a"):
-        href = a.attrib.get("href", "")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
         if not href or href in seen_urls:
             continue
-        if href.endswith(("/categories/", "/tags/", "/actors/", "/login/", "/register/")) or "/page/" in href or "/actor/" in href or "/tag/" in href or "?" in href:
+        if not ("/videos/" in href) or href == "/videos/" or href.startswith("/videos/2") or "/page=" in href:
             continue
 
-        # Video posts end in / and have title/slug
-        if href.startswith(BASE_URL) and len(href.split("/")) >= 4:
-            slug = href.rstrip("/").split("/")[-1]
-            if len(slug) > 10 and not slug.startswith(("category", "tag", "actor", "author", "wp-")):
-                seen_urls.add(href)
-                img = a.css("img")
-                thumb = img[0].attrib.get("data-src") or img[0].attrib.get("src") if img else ""
-                title = a.attrib.get("title") or (a.text.clean() if a.text else "")
-                if not title:
-                    title = slug.replace("-", " ").title()
+        full_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+        slug = href.rstrip("/").split("/")[-1]
+        if len(slug) < 4 or slug.isdigit():
+            continue
 
-                items.append({
-                    "source_site": "pimpbunny",
-                    "source_post_id": slug,
-                    "title": title,
-                    "detail_url": href,
-                    "thumbnail_url": thumb,
-                    "models": [],
-                    "published_at": None
-                })
+        img = a.find("img")
+        thumb = ""
+        if img:
+            thumb = img.get("data-original") or img.get("data-src") or img.get("src") or ""
+            if thumb.startswith("data:"):
+                thumb = ""
+
+        title = a.get("title") or (img.get("alt") if img else "") or a.text.strip()
+        if not title:
+            title = slug.replace("-", " ").title()
+
+        seen_urls.add(href)
+        items.append({
+            "source_site": "pimpbunny",
+            "source_post_id": slug,
+            "title": title,
+            "detail_url": full_url,
+            "thumbnail_url": thumb,
+            "models": [],
+            "published_at": None
+        })
 
     # Estimate max page from pagination
-    max_page = 154
-    for pl in resp.css("a[href*='/page/']"):
-        m = re.search(r"/page/(\d+)/", pl.attrib.get("href", ""))
+    max_page = 2000
+    for pl in soup.find_all("a", href=True):
+        m = re.search(r"/videos/(\d+)/", pl["href"])
         if m:
             p_val = int(m.group(1))
             if p_val > max_page:
@@ -99,102 +118,95 @@ def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
     return items, max_page
 
 def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetches video detail and extracts KVS embed iframe and metadata."""
     url = card.get("detail_url")
     if not url:
         return card
 
-    resp = fetch_page(url)
-    if not resp:
+    html = fetch_page(url)
+    if not html:
         return card
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
 
     # 1. Parse structured JSON-LD VideoObject
     video_obj = None
-    for s in resp.css("script"):
-        if s.attrib.get("type") == "application/ld+json":
-            try:
-                data = json.loads(s.text)
-                if isinstance(data, dict):
-                    if data.get("@type") == "VideoObject":
-                        video_obj = data
-                        break
-                    elif "@graph" in data:
-                        for node in data["@graph"]:
-                            if node.get("@type") == "VideoObject":
-                                video_obj = node
-                                break
-            except Exception:
-                pass
+    for sc in soup.find_all("script", type="application/ld+json"):
+        try:
+            d = json.loads(sc.text)
+            if isinstance(d, dict) and d.get("@type") == "VideoObject":
+                video_obj = d
+                break
+        except Exception:
+            pass
 
-    real_title = card.get("title")
-    thumbnail = card.get("thumbnail_url")
-    published_at = card.get("published_at")
+    # 2. Extract numeric Video ID
+    video_id = None
+    m_id = re.search(r"videoId:\s*['\"](\d+)['\"]", html)
+    if m_id:
+        video_id = m_id.group(1)
+    elif video_obj and video_obj.get("contentUrl"):
+        m2 = re.search(r"/(\d+)/\d+_\w+\.mp4", video_obj["contentUrl"])
+        if m2:
+            video_id = m2.group(1)
+    elif card.get("source_post_id") and card["source_post_id"].isdigit():
+        video_id = card["source_post_id"]
+
+    # 3. Models extraction (OnlyFans creators linked directly)
+    models = []
+    for a in soup.find_all("a", href=True):
+        if "/onlyfans-creators/" in a["href"]:
+            t = a.text.strip()
+            if t and t not in models and t.lower() not in ["onlyfans creators", "view more"]:
+                models.append(t)
+
+    # 4. Tags extraction
+    tags = []
+    for a in soup.find_all("a", href=True):
+        if "/tags/" in a["href"]:
+            t = a.text.strip()
+            if t and t != "Tags" and t not in tags:
+                tags.append(t)
+
+    real_title = (video_obj.get("name") if video_obj else None) or (soup.title.string.replace("| PimpBunny", "").strip() if soup.title else None) or card.get("title")
+
+    # Duration
     duration_sec = 600
     duration_fmt = "10:00"
-    content_url = None
-    tags = []
-    models = []
+    if video_obj and video_obj.get("duration"):
+        duration_sec, duration_fmt = parse_iso_duration(video_obj["duration"])
 
-    if video_obj:
-        real_title = video_obj.get("name") or real_title
-        thumb_val = video_obj.get("thumbnailUrl")
-        if isinstance(thumb_val, list) and thumb_val:
-            thumbnail = thumb_val[0]
-        elif isinstance(thumb_val, str):
-            thumbnail = thumb_val
+    # Thumbnail (crystal-clear 800x450 preview)
+    thumbnail = (video_obj.get("thumbnailUrl") if video_obj else None) or card.get("thumbnail_url")
+    if video_id and not thumbnail:
+        folder = (int(video_id) // 1000) * 1000
+        thumbnail = f"https://pimpbunny.com/contents/videos_screenshots/{folder}/{video_id}/preview.jpg"
 
-        published_at = video_obj.get("uploadDate") or published_at
-        dur_raw = video_obj.get("duration")
-        duration_sec, duration_fmt = parse_iso_duration(dur_raw)
-        content_url = video_obj.get("contentUrl")
-
-        # Extract model from description link
-        desc = video_obj.get("description", "")
-        m_actor = re.search(r"/actor/([^/\"]+)/", desc)
-        if m_actor:
-            models.append(m_actor.group(1).replace("-", " ").title())
-
-    # Fallback to HTML extraction
-    if not models:
-        for a_el in resp.css("a[href*='/actor/']"):
-            t = a_el.text.clean() if a_el.text else ""
-            clean_m = t.replace("OnlyFans", "").strip()
-            if clean_m and clean_m.lower() != "actors":
-                models.append(clean_m)
-
-    # Tags from tags/categories
-    for t_el in resp.css("a[href*='/tag/'], a[href*='/category/']"):
-        t = t_el.text.clean() if t_el.text else ""
-        if t and t.lower() not in ["onlyfans leaks", "uncategorized", "video"]:
-            tags.append(t)
-
-    # Extract HTML5 Video tag
-    video_tag = resp.css("video source")
-    stream_url = video_tag[0].attrib.get("src") if video_tag else content_url
-
+    # 5. Exactly ONE verified KVS responsive embed player (Never multiple fake servers)
     servers = []
-    if stream_url:
+    embed_url = f"https://pimpbunny.com/embed/{video_id}" if video_id else None
+    if embed_url:
         servers.append({
-            "name": "PimpBunny Stream",
-            "embed_url": stream_url,
-            "type": "direct_mp4",
-            "headers": {"Referer": "https://pimpbunny.net/"}
+            "name": "PimpBunny (720p HD)",
+            "embed_url": embed_url,
+            "type": "iframe",
+            "quality_label": "720p HD",
+            "quality_score": 720,
+            "headers": {"Referer": "https://pimpbunny.com/"}
         })
-    servers.append({
-        "name": "PimpBunny Web Player",
-        "embed_url": url,
-        "type": "iframe"
-    })
 
     merged = dict(card)
+    merged["source_post_id"] = str(video_id or card.get("source_post_id"))
     merged["title"] = real_title
     merged["thumbnail_url"] = thumbnail
     merged["clean_thumbnail_url"] = thumbnail
     merged["duration_seconds"] = duration_sec
     merged["duration_formatted"] = duration_fmt
-    merged["full_video_url"] = stream_url or url
-    merged["video_mime_type"] = "video/mp4" if stream_url else "embed/iframe"
+    merged["full_video_url"] = embed_url
+    merged["video_mime_type"] = "embed/iframe"
     merged["servers"] = servers
     merged["models"] = list(set(models))
     merged["tags"] = list(set(tags))
-    merged["published_at"] = published_at
+    merged["published_at"] = video_obj.get("uploadDate") if video_obj else card.get("published_at")
     return merged

@@ -54,10 +54,10 @@ def extract_locker_hash(url: str) -> Optional[str]:
     if m:
         return f"igw:{m.group(1)}"
 
-    # PimpBunny base64 query payload
-    m = re.search(r"/stream/video\.mp4\?v=([A-Za-z0-9+/=]+)", url)
+    # PimpBunny KVS embed: /embed/(\d+)
+    m = re.search(r"pimpbunny\.[a-z]+/embed/(\d+)", url)
     if m:
-        return f"pb:{m.group(1)[:20]}"
+        return f"pb:{m.group(1)}"
 
     return None
 

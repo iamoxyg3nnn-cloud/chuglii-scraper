@@ -1082,7 +1082,7 @@ DECLARE
     updated_count int := 0;
 BEGIN
     WITH raw_items AS (
-        SELECT
+        SELECT DISTINCT ON ((x->>'source_site'), (x->>'source_post_id'))
             (x->>'canonical_fingerprint') AS canonical_fingerprint,
             (x->>'source_site') AS source_site,
             (x->>'source_post_id') AS source_post_id,

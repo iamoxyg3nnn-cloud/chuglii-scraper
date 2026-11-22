@@ -101,11 +101,12 @@ def adaptive_backoff(attempt: int, base: float = 3.0, max_wait: float = 30.0) ->
 VIRAL_MMS_KNOWN_IDS: Set[str] = set()
 JAV_KNOWN_IDS: Set[str] = set()
 MYANMAR_KNOWN_IDS: Set[str] = set()
+ONLYFANS_KNOWN_IDS: Set[str] = set()
 CACHES_INITIALIZED: bool = False
 
 def init_known_id_caches() -> None:
     """Preloads existing post IDs from Supabase and local disks for zero-redundancy deduplication."""
-    global VIRAL_MMS_KNOWN_IDS, JAV_KNOWN_IDS, MYANMAR_KNOWN_IDS, CACHES_INITIALIZED
+    global VIRAL_MMS_KNOWN_IDS, JAV_KNOWN_IDS, MYANMAR_KNOWN_IDS, ONLYFANS_KNOWN_IDS, CACHES_INITIALIZED
     if CACHES_INITIALIZED:
         return
     log("\n[*] Initializing high-speed deduplication caches from Supabase & local...")
@@ -144,7 +145,15 @@ def init_known_id_caches() -> None:
             MYANMAR_KNOWN_IDS = get_scraper_known_post_ids("myanmar", limit=50000)
         except Exception:
             MYANMAR_KNOWN_IDS = set()
-    log(f"  [✓] Myanmar Deduplication Cache: {len(MYANMAR_KNOWN_IDS)} known IDs loaded\n")
+    log(f"  [✓] Myanmar Deduplication Cache: {len(MYANMAR_KNOWN_IDS)} known IDs loaded")
+
+    # 4. OnlyFans IDs
+    try:
+        from scraper.categories.onlyfans.pipeline import load_known_ids as load_of_known_ids
+        ONLYFANS_KNOWN_IDS = load_of_known_ids()
+    except Exception:
+        ONLYFANS_KNOWN_IDS = set()
+    log(f"  [✓] OnlyFans Deduplication Cache: {len(ONLYFANS_KNOWN_IDS)} known IDs loaded\n")
 
     CACHES_INITIALIZED = True
 
@@ -409,9 +418,101 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
         log(f"  [!] Myanmar sync error: {e}")
         return 0
 
+# ─── OnlyFans Leaks Ingestion Task ───────────────────────────────────────────
+
+def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
+    """Runs OnlyFans multi-site ingestion with cross-site deduplication and stream promotion."""
+    global ONLYFANS_KNOWN_IDS
+    log("\n" + "=" * 65)
+    log(f"  [FEED 4/4] OnlyFans Leaks Multi-Site Fleet | 1080p Stream Promotion")
+    log("=" * 65)
+    try:
+        from scraper.categories.onlyfans.pipeline import (
+            run_site_crawl,
+            load_checkpoints,
+            save_checkpoints,
+            save_known_ids,
+            CrossSiteDeduplicator,
+            CURRENT_DIR as OF_DIR,
+            SOURCES as OF_SOURCES
+        )
+
+        checkpoints = load_checkpoints()
+        deduplicator = CrossSiteDeduplicator()
+
+        cache_file = OF_DIR / "onlyfans_canonical_cache.json"
+        if cache_file.exists():
+            try:
+                import json
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                for r in cached:
+                    deduplicator.register_existing(r)
+                log(f"    [*] Pre-loaded {len(cached)} canonical OnlyFans records into dedup engine")
+            except Exception:
+                pass
+
+        total_new = 0
+        total_merged = 0
+
+        sites = ["internetchicks", "influencersgonewild", "sheeshfans", "pimpbunny"]
+        for site_key in sites:
+            if site_key not in OF_SOURCES:
+                continue
+
+            site_state = checkpoints.get(site_key, {"current_page": 1, "max_pages": 200})
+            curr_cursor = site_state.get("current_page", 1)
+            max_pages = site_state.get("max_pages", 200)
+
+            # 1. Head check (Page 1) when scheduled
+            if check_head:
+                h_stats = run_site_crawl(
+                    site_key=site_key,
+                    start_page=1,
+                    max_pages=1,
+                    deduplicator=deduplicator,
+                    known_ids=ONLYFANS_KNOWN_IDS,
+                    dry_run=False,
+                    jitter=0.5
+                )
+                total_new += h_stats.get("items_new", 0)
+                total_merged += h_stats.get("items_merged", 0)
+
+            # 2. Historical backfill cursor
+            if curr_cursor <= max_pages:
+                c_stats = run_site_crawl(
+                    site_key=site_key,
+                    start_page=curr_cursor,
+                    max_pages=pages_per_site,
+                    deduplicator=deduplicator,
+                    known_ids=ONLYFANS_KNOWN_IDS,
+                    dry_run=False,
+                    jitter=0.8
+                )
+                total_new += c_stats.get("items_new", 0)
+                total_merged += c_stats.get("items_merged", 0)
+                site_state["current_page"] = curr_cursor + pages_per_site
+
+            checkpoints[site_key] = site_state
+
+        save_checkpoints(checkpoints)
+        save_known_ids(ONLYFANS_KNOWN_IDS)
+
+        try:
+            import json
+            dedup_export = deduplicator.get_all_canonical()
+            cache_file.write_text(json.dumps(dedup_export, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        log(f"\n  [✓] OnlyFans multi-site sync complete. New videos: {total_new}, Merged duplicates: {total_merged}")
+        return total_new
+    except Exception as e:
+        log(f"  [!] OnlyFans sync error: {e}")
+        return 0
+
 # ─── Unified Cycle Executor ──────────────────────────────────────────────────
 
-def run_unified_sync_cycle(check_head: bool = True, mms_pages: int = 1, jav_pages: int = 1, workers: int = 3) -> Dict[str, int]:
+def run_unified_sync_cycle(check_head: bool = True, mms_pages: int = 1, jav_pages: int = 1, of_pages: int = 1, workers: int = 3) -> Dict[str, int]:
     """Executes a single combined sync cycle across target websites."""
     t0 = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -443,15 +544,22 @@ def run_unified_sync_cycle(check_head: bool = True, mms_pages: int = 1, jav_page
     # 3. Scrape Myanmar (Head + Cursor Backfill)
     myanmar_count = run_myanmar_sync(check_head=check_head, workers=workers)
 
+    # Human transition pause
+    human_jitter(1.5, 2.5)
+
+    # 4. Scrape OnlyFans (Head + Cursor Backfill across InternetChicks, InfluencersGoneWild, SheeshFans, PimpBunny)
+    of_count = run_onlyfans_sync(check_head=check_head, pages_per_site=of_pages)
+
     elapsed = time.time() - t0
     log("\n" + "#" * 65)
     log(f"  CYCLE SUMMARY | Elapsed: {elapsed:.1f}s")
     log(f"  - Viral MMS:    {mms_count} videos processed")
     log(f"  - Japanese JAV: {jav_count} new videos ingested")
     log(f"  - Myanmar:      {myanmar_count} new videos ingested")
+    log(f"  - OnlyFans:     {of_count} new videos ingested")
     log("#" * 65)
 
-    return {"mms": mms_count, "jav": jav_count, "myanmar": myanmar_count}
+    return {"mms": mms_count, "jav": jav_count, "myanmar": myanmar_count, "onlyfans": of_count}
 
 # ─── Continuous 24/7 Session Daemon (For GitHub Actions) ─────────────────────
 
@@ -528,10 +636,16 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=3, help="Concurrent workers for detail resolver (default: 3)")
     parser.add_argument("--mms-pages", type=int, default=1, help="Pages of Viral MMS to scrape")
     parser.add_argument("--jav-pages", type=int, default=1, help="Pages of Japanese JAV to scrape per category")
+    parser.add_argument("--of-pages", type=int, default=1, help="Pages of OnlyFans to scrape per site")
+    parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--check-head", action="store_true", default=True, help="Check Page 1 for latest releases")
     args = parser.parse_args()
 
-    if args.daemon:
+    if args.onlyfans:
+        wait_for_supabase(max_wait_seconds=600, poll_interval=15)
+        init_known_id_caches()
+        run_onlyfans_sync(check_head=args.check_head, pages_per_site=args.of_pages)
+    elif args.daemon:
         run_continuous_daemon(
             session_minutes=args.session_minutes,
             interval_seconds=args.interval,
@@ -542,5 +656,6 @@ if __name__ == "__main__":
             check_head=args.check_head,
             mms_pages=args.mms_pages,
             jav_pages=args.jav_pages,
+            of_pages=args.of_pages,
             workers=args.workers
         )

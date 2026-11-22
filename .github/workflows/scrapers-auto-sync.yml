@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   scrape-fleet:
-    name: Scrape All Categories (Viral MMS, Japanese JAV & Myanmar)
+    name: Scrape All Categories (Viral MMS, Japanese JAV, Myanmar & OnlyFans)
     runs-on: ubuntu-latest
     timeout-minutes: 355 # 5h55m (under GitHub's 360m hard limit)
 
@@ -73,6 +73,7 @@ jobs:
           echo "Feed 1: Viral MMS (MMSVibeX -> scraper.videos)"
           echo "Feed 2: Japanese JAV (SupJav -> scraper.japanese_videos)"
           echo "Feed 3: Myanmar (Buu Mal -> scraper.myanmar_videos)"
+          echo "Feed 4: OnlyFans Leaks (Multi-Site Aggregator -> scraper.onlyfans_videos)"
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -96,7 +97,10 @@ jobs:
             scraper/categories/japanese/known_post_ids.json \
             scraper/categories/japanese/cf_session.json \
             scraper/categories/myanmar/checkpoint.json \
-            scraper/categories/myanmar/known_post_ids.json || true
+            scraper/categories/myanmar/known_post_ids.json \
+            scraper/categories/onlyfans/checkpoint.json \
+            scraper/categories/onlyfans/known_post_ids.json \
+            scraper/categories/onlyfans/onlyfans_canonical_cache.json || true
           if ! git diff --staged --quiet; then
             echo "[*] Checkpoint progress detected across scrapers. Committing updates..."
             git commit -m "chore: persist unified scrapers progress checkpoints [skip ci]"

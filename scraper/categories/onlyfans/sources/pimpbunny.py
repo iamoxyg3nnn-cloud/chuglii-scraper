@@ -4,6 +4,7 @@ Kernel Video Sharing (KVS) platform for OnlyFans / adult content creator leaks.
 """
 import re
 import json
+import time
 from typing import List, Dict, Any, Optional
 
 BASE_URL = "https://pimpbunny.com"
@@ -45,12 +46,18 @@ def fetch_page(url: str, timeout: int = 25) -> Optional[str]:
         from curl_cffi import requests
         r = requests.get(
             url,
-            headers={"Referer": "https://pimpbunny.com/"},
+            headers={
+                "Referer": "https://pimpbunny.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            },
             impersonate="chrome124",
             timeout=timeout
         )
-        if r.status_code == 200:
+        if r.status_code == 200 and "bunny-shield" not in r.text:
             return r.text
+        elif r.status_code == 403 or "bunny-shield" in r.text:
+            # Bunny Shield challenge active
+            return None
     except Exception:
         pass
     return None
@@ -70,32 +77,37 @@ def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
     soup = BeautifulSoup(html, "html.parser")
 
     items = []
-    seen_urls = set()
+    seen_slugs = set()
 
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href or href in seen_urls:
-            continue
-        if not ("/videos/" in href) or href == "/videos/" or href.startswith("/videos/2") or "/page=" in href:
+        href = a["href"].strip()
+        if not href:
             continue
 
-        full_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-        slug = href.rstrip("/").split("/")[-1]
-        if len(slug) < 4 or slug.isdigit():
+        # Match exact video detail link: /videos/<slug>/
+        m = re.match(r"^(?:https?://(?:www\.)?pimpbunny\.com)?/videos/([a-zA-Z0-9_-]+)/?$", href)
+        if not m:
             continue
 
+        slug = m.group(1).lower()
+        if slug.isdigit() or len(slug) < 5 or slug in seen_slugs:
+            continue
+
+        # Real video cards on PimpBunny have an img tag inside
         img = a.find("img")
-        thumb = ""
-        if img:
-            thumb = img.get("data-original") or img.get("data-src") or img.get("src") or ""
-            if thumb.startswith("data:"):
-                thumb = ""
+        if not img:
+            continue
 
-        title = a.get("title") or (img.get("alt") if img else "") or a.text.strip()
+        full_url = f"{BASE_URL}/videos/{slug}/"
+        thumb = img.get("data-original") or img.get("data-src") or img.get("src") or ""
+        if thumb.startswith("data:"):
+            thumb = ""
+
+        title = a.get("title") or img.get("alt") or a.text.strip()
         if not title:
             title = slug.replace("-", " ").title()
 
-        seen_urls.add(href)
+        seen_slugs.add(slug)
         items.append({
             "source_site": "pimpbunny",
             "source_post_id": slug,
@@ -109,9 +121,9 @@ def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
     # Estimate max page from pagination
     max_page = 2000
     for pl in soup.find_all("a", href=True):
-        m = re.search(r"/videos/(\d+)/", pl["href"])
-        if m:
-            p_val = int(m.group(1))
+        m_page = re.search(r"/videos/(\d+)/", pl["href"])
+        if m_page:
+            p_val = int(m_page.group(1))
             if p_val > max_page:
                 max_page = p_val
 
@@ -150,8 +162,10 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
         m2 = re.search(r"/(\d+)/\d+_\w+\.mp4", video_obj["contentUrl"])
         if m2:
             video_id = m2.group(1)
-    elif card.get("source_post_id") and card["source_post_id"].isdigit():
-        video_id = card["source_post_id"]
+    elif video_obj and video_obj.get("thumbnailUrl"):
+        m3 = re.search(r"/videos_screenshots/\d+/(\d+)/", video_obj["thumbnailUrl"])
+        if m3:
+            video_id = m3.group(1)
 
     # 3. Models extraction (OnlyFans creators linked directly)
     models = []
@@ -179,7 +193,7 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
 
     # Thumbnail (crystal-clear 800x450 preview)
     thumbnail = (video_obj.get("thumbnailUrl") if video_obj else None) or card.get("thumbnail_url")
-    if video_id and not thumbnail:
+    if video_id and (not thumbnail or thumbnail.startswith("data:")):
         folder = (int(video_id) // 1000) * 1000
         thumbnail = f"https://pimpbunny.com/contents/videos_screenshots/{folder}/{video_id}/preview.jpg"
 

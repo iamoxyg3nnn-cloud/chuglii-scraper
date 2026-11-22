@@ -181,8 +181,12 @@ def run_site_crawl(
                 raw_servers = raw.get("servers") or []
                 raw_stream = raw.get("full_video_url")
                 if not raw_stream and not raw_servers:
-                    known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
-                    print(f"      [SKIP NON-VIDEO] '{raw.get('title')}' has no video stream (photo set). Skipped.")
+                    is_photo_set = raw.get("gallery_url") or any(w in raw.get("title", "").lower() for w in ["photo", "photos", "set", "gallery"])
+                    if is_photo_set:
+                        known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
+                        print(f"      [SKIP PHOTO SET] '{raw.get('title')}' is a photo set/gallery. Skipped.")
+                    else:
+                        print(f"      [SKIP UNRESOLVED] '{raw.get('title')}' has no stream (enrichment failed or anti-bot gated). Not marked known.")
                     continue
 
                 polished = polish_onlyfans_record(raw)
@@ -207,9 +211,15 @@ def run_site_crawl(
 
         # Batch upsert to database
         if not dry_run and batch_to_upsert:
+            # Deduplicate batch by (source_site, source_post_id) to avoid Postgres error 21000
+            deduped_batch_dict = {}
+            for r in batch_to_upsert:
+                k = (r.get("source_site"), str(r.get("source_post_id")))
+                deduped_batch_dict[k] = r
+            final_batch = list(deduped_batch_dict.values())
             try:
                 from scraper.db import upsert_onlyfans_videos_batch
-                upsert_onlyfans_videos_batch(batch_to_upsert)
+                upsert_onlyfans_videos_batch(final_batch)
             except Exception as e:
                 print(f"[!] Supabase upsert error: {e}")
 

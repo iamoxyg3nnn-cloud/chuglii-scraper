@@ -63,6 +63,9 @@ def clean_thumbnail_url(raw_url: Optional[str], srcset: Optional[str] = None) ->
     except Exception:
         return target
 
+clean_image_url = clean_thumbnail_url
+
+
 def parse_date_to_iso(date_str: Optional[str]) -> Optional[str]:
     """Parses date like 'November 22, 2026' into ISO 8601 UTC string."""
     if not date_str:

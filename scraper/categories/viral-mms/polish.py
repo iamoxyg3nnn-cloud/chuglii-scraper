@@ -98,6 +98,13 @@ def polish_scraped_record(raw: Dict[str, Any], source_site: str = "mmsvibex") ->
     url = raw.get("url", "")
     slug = raw.get("slug") or extract_url_slug(url) or f"viral-mms-{raw.get('post_id', '')}"
 
+    # Enrich multi-part titles from slug if title lacks part indicator
+    part_match = re.search(r"-part-?([0-9]+)$", slug, flags=re.IGNORECASE) or re.search(r"-([0-9]{1,2})$", slug)
+    if part_match and not re.search(r"part[ -]?[0-9]+", title, flags=re.IGNORECASE):
+        part_num = part_match.group(1)
+        if not re.search(rf"[ -]{part_num}$", title):
+            title = f"{title} - Part {part_num}"
+
     dur_sec, dur_fmt = parse_duration_seconds(
         raw_meta.get("duration"),
         raw_meta.get("duration_seconds")

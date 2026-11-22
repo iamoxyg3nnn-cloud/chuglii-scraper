@@ -115,9 +115,40 @@ AS $$
 DECLARE
     v jsonb;
     inserted_count int := 0;
+    existing_id uuid;
 BEGIN
     FOR v IN SELECT * FROM jsonb_array_elements(items)
     LOOP
+        existing_id := NULL;
+
+        -- A. Check if exact full_video_url exists
+        IF (v->>'full_video_url') IS NOT NULL AND trim(v->>'full_video_url') <> '' THEN
+            SELECT id INTO existing_id
+            FROM scraper.videos
+            WHERE full_video_url = (v->>'full_video_url')
+            LIMIT 1;
+        END IF;
+
+        -- B. Check if exact title + duration exists
+        IF existing_id IS NULL AND (v->>'duration_seconds')::int > 0 THEN
+            SELECT id INTO existing_id
+            FROM scraper.videos
+            WHERE lower(trim(title)) = lower(trim(v->>'title'))
+              AND duration_seconds = (v->>'duration_seconds')::int
+            LIMIT 1;
+        END IF;
+
+        -- If existing duplicate found, update metrics and skip duplicate row insertion
+        IF existing_id IS NOT NULL THEN
+            UPDATE scraper.videos SET
+                views_count = GREATEST(COALESCE((v->>'views_count')::bigint, 0), scraper.videos.views_count),
+                rating_score = COALESCE((v->>'rating_score')::numeric, scraper.videos.rating_score),
+                updated_at = now()
+            WHERE id = existing_id;
+            inserted_count := inserted_count + 1;
+            CONTINUE;
+        END IF;
+
         INSERT INTO scraper.videos (
             source_site,
             source_post_id,
@@ -300,7 +331,8 @@ AS $$
         CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN published_at END ASC NULLS LAST,
         published_at DESC NULLS LAST,
-        scraped_at DESC
+        scraped_at DESC,
+        id DESC
     LIMIT p_limit OFFSET p_offset;
 $$;
 
@@ -591,7 +623,8 @@ AS $$
       CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
       CASE WHEN p_sort = 'oldest' THEN published_at END ASC NULLS LAST,
       published_at DESC NULLS LAST,
-      scraped_at DESC
+      scraped_at DESC,
+      id DESC
     LIMIT p_limit OFFSET p_offset;
 $$;
 

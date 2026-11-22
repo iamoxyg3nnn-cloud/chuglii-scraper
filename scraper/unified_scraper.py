@@ -205,10 +205,66 @@ def run_japanese_jav_sync(pages: int = 1, workers: int = 3, checkpoint: Optional
     log(f"\n  [✓] Japanese JAV sync complete. New videos added: {new_ingested}")
     return new_ingested
 
+
+# ─── Myanmar (Buu Mal) Ingestion Task ────────────────────────────────────────
+
+def run_myanmar_sync(workers: int = 4) -> int:
+    """Runs Buu Mal (Myanmar) ingestion: checks Page 1 for new releases, then advances cursor."""
+    log("\n" + "=" * 65)
+    log(f"  [FEED 3/3] Buu Mal Myanmar Scraper | Isolated Schema")
+    log("=" * 65)
+    try:
+        from scraper.categories.myanmar.pipeline import (
+            scrape_page,
+            load_known_ids,
+            save_known_ids,
+            load_checkpoint as load_myanmar_checkpoint,
+            save_checkpoint as save_myanmar_checkpoint
+        )
+        from scraper.db import upsert_myanmar_videos_batch
+
+        known_ids = load_known_ids()
+        checkpoint = load_myanmar_checkpoint()
+        curr_page = checkpoint.get("last_page", 1)
+        ingested = 0
+
+        # 1. Scrape Page 1 for brand new releases
+        p1_records = scrape_page(1, tag="myanmar", known_ids=known_ids, workers=workers)
+        if p1_records:
+            upsert_myanmar_videos_batch(p1_records)
+            for r in p1_records:
+                known_ids.add(r["source_post_id"])
+            save_known_ids(known_ids)
+            ingested += len(p1_records)
+            log(f"    [✓] Page 1: Ingested {len(p1_records)} new Myanmar releases")
+        else:
+            log("    Page 1: Up to date (all releases already indexed)")
+
+        # 2. Advance historical backfill cursor
+        if curr_page > 1:
+            log(f"    [*] Myanmar Historical Cursor: Crawling page {curr_page}...")
+            cursor_records = scrape_page(curr_page, tag="myanmar", known_ids=known_ids, workers=workers)
+            if cursor_records:
+                upsert_myanmar_videos_batch(cursor_records)
+                for r in cursor_records:
+                    known_ids.add(r["source_post_id"])
+                save_known_ids(known_ids)
+                ingested += len(cursor_records)
+                log(f"    [✓] Cursor page {curr_page}: Ingested {len(cursor_records)} videos")
+
+        checkpoint["last_page"] = curr_page + 1
+        checkpoint["total_scraped"] = checkpoint.get("total_scraped", 0) + ingested
+        save_myanmar_checkpoint(checkpoint)
+        log(f"  [✓] Myanmar sync complete. Total new videos: {ingested}")
+        return ingested
+    except Exception as e:
+        log(f"  [!] Myanmar sync error: {e}")
+        return 0
+
 # ─── Unified Cycle Executor ──────────────────────────────────────────────────
 
 def run_unified_sync_cycle(mms_pages: int = 1, jav_pages: int = 1, workers: int = 3) -> Dict[str, int]:
-    """Executes a single combined sync cycle across both target websites."""
+    """Executes a single combined sync cycle across target websites."""
     t0 = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     log("\n" + "#" * 65)
@@ -229,14 +285,21 @@ def run_unified_sync_cycle(mms_pages: int = 1, jav_pages: int = 1, workers: int 
     # 2. Scrape Japanese JAV (Head + Cursor Backfill)
     jav_count = run_japanese_jav_sync(pages=jav_pages, workers=workers, checkpoint=checkpoint)
 
+    # Human transition pause
+    human_jitter(1.5, 3.0)
+
+    # 3. Scrape Myanmar (Head + Cursor Backfill)
+    myanmar_count = run_myanmar_sync(workers=workers)
+
     elapsed = time.time() - t0
     log("\n" + "#" * 65)
     log(f"  CYCLE SUMMARY | Elapsed: {elapsed:.1f}s")
     log(f"  - Viral MMS:    {mms_count} videos processed")
     log(f"  - Japanese JAV: {jav_count} new videos ingested")
+    log(f"  - Myanmar:      {myanmar_count} new videos ingested")
     log("#" * 65)
 
-    return {"mms": mms_count, "jav": jav_count}
+    return {"mms": mms_count, "jav": jav_count, "myanmar": myanmar_count}
 
 # ─── Continuous 24/7 Session Daemon (For GitHub Actions) ─────────────────────
 

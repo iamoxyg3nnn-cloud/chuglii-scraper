@@ -149,6 +149,57 @@ def get_japanese_videos(source_site: Optional[str] = None, tag: Optional[str] = 
     return response.data
 
 
+# ─── Isolated Myanmar Database Functions ────────────────────────────────────
+
+def upsert_myanmar_video(polished_record: Dict[str, Any]) -> Any:
+    """Inserts or updates a single video in scraper.myanmar_videos."""
+    return upsert_myanmar_videos_batch([polished_record])
+
+def upsert_myanmar_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """
+    Batch inserts or updates video records in the segregated scraper.myanmar_videos table.
+    Uses resilient REST RPC with automatic exponential backoff on Cloudflare Tunnel hiccups.
+    """
+    if not polished_records:
+        return {"success": True, "count": 0}
+    
+    res = call_supabase_rpc("scraper_upsert_myanmar_videos", {"items": polished_records}, retries=retries)
+    if res is not None:
+        return res
+
+    # Fallback to supabase-py client if available
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_myanmar_videos", {"items": polished_records}).execute()
+            return response.data
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Myanmar upsert batch failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(wait_time)
+
+def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = None, category: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Retrieves stored videos from scraper.myanmar_videos table using RPC bridge.
+    """
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset
+    }
+    response = supabase.rpc("scraper_get_myanmar_videos", params).execute()
+    return response.data
+
+
+
 # ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
 
 def is_supabase_healthy(timeout: float = 8.0) -> bool:

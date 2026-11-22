@@ -720,3 +720,297 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION public.scraper_get_japanese_related_videos(uuid, int) TO anon, authenticated, service_role;
+
+
+-- ============================================================================
+-- 9. ISOLATED MYANMAR VIDEOS SCHEMA & RPC BRIDGE
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS scraper.myanmar_videos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_site TEXT NOT NULL,                     -- e.g. 'buumal'
+    source_post_id TEXT NOT NULL,                  -- e.g. '6b027810'
+    title TEXT NOT NULL,
+    slug TEXT,
+    detail_url TEXT NOT NULL,
+    full_video_url TEXT,                           -- Direct R2 MP4 stream URL or embed
+    video_mime_type TEXT DEFAULT 'video/mp4',
+    trailer_preview_url TEXT,
+    thumbnail_url TEXT,
+    clean_thumbnail_url TEXT,
+    duration_seconds INTEGER,
+    duration_formatted VARCHAR(32),
+    views_count BIGINT DEFAULT 0,
+    views_raw VARCHAR(64),
+    rating_score NUMERIC(5,2),
+    rating_raw VARCHAR(32),
+    categories TEXT[] DEFAULT '{"myanmar"}',
+    tags TEXT[] DEFAULT '{}',
+    actors TEXT[] DEFAULT '{}',
+    status TEXT DEFAULT 'active',
+    published_at TIMESTAMPTZ,
+    scraped_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    raw_payload JSONB DEFAULT '{}'::jsonb,
+    CONSTRAINT uq_myanmar_videos UNIQUE (source_site, source_post_id)
+);
+
+ALTER TABLE scraper.myanmar_videos ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS service_role_all_myanmar_videos ON scraper.myanmar_videos;
+CREATE POLICY service_role_all_myanmar_videos ON scraper.myanmar_videos
+    FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS anon_select_myanmar_videos ON scraper.myanmar_videos;
+CREATE POLICY anon_select_myanmar_videos ON scraper.myanmar_videos
+    FOR SELECT TO anon, authenticated USING (status = 'active');
+
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_source ON scraper.myanmar_videos(source_site, source_post_id);
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_published ON scraper.myanmar_videos(published_at DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_views ON scraper.myanmar_videos(views_count DESC);
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_tags ON scraper.myanmar_videos USING gin(tags);
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_categories ON scraper.myanmar_videos USING gin(categories);
+CREATE INDEX IF NOT EXISTS idx_myanmar_videos_actors ON scraper.myanmar_videos USING gin(actors);
+
+-- UPSERT RPC
+CREATE OR REPLACE FUNCTION public.scraper_upsert_myanmar_videos(items jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = scraper, public
+AS $$
+DECLARE
+    v jsonb;
+    inserted_count int := 0;
+BEGIN
+    FOR v IN SELECT * FROM jsonb_array_elements(items)
+    LOOP
+        INSERT INTO scraper.myanmar_videos (
+            source_site,
+            source_post_id,
+            title,
+            slug,
+            detail_url,
+            full_video_url,
+            video_mime_type,
+            trailer_preview_url,
+            thumbnail_url,
+            clean_thumbnail_url,
+            duration_seconds,
+            duration_formatted,
+            views_count,
+            views_raw,
+            rating_score,
+            rating_raw,
+            categories,
+            tags,
+            actors,
+            published_at,
+            raw_payload,
+            updated_at
+        ) VALUES (
+            COALESCE(v->>'source_site', 'buumal'),
+            v->>'source_post_id',
+            COALESCE(v->>'title', 'Untitled Myanmar Video'),
+            v->>'slug',
+            COALESCE(v->>'detail_url', ''),
+            v->>'full_video_url',
+            COALESCE(v->>'video_mime_type', 'video/mp4'),
+            v->>'trailer_preview_url',
+            v->>'thumbnail_url',
+            v->>'clean_thumbnail_url',
+            (v->>'duration_seconds')::int,
+            (v->>'duration_formatted'),
+            COALESCE((v->>'views_count')::bigint, 0),
+            (v->>'views_raw'),
+            (v->>'rating_score')::numeric,
+            (v->>'rating_raw'),
+            ARRAY(SELECT jsonb_array_elements_text(COALESCE(v->'categories', '["myanmar"]'::jsonb))),
+            ARRAY(SELECT jsonb_array_elements_text(COALESCE(v->'tags', '[]'::jsonb))),
+            ARRAY(SELECT jsonb_array_elements_text(COALESCE(v->'actors', '[]'::jsonb))),
+            CASE WHEN (v->>'published_at') IS NOT NULL AND (v->>'published_at') <> '' 
+                 THEN (v->>'published_at')::timestamptz ELSE NULL END,
+            COALESCE(v->'raw_payload', '{}'::jsonb),
+            now()
+        )
+        ON CONFLICT (source_site, source_post_id) DO UPDATE SET
+            title = EXCLUDED.title,
+            slug = EXCLUDED.slug,
+            detail_url = EXCLUDED.detail_url,
+            full_video_url = COALESCE(EXCLUDED.full_video_url, scraper.myanmar_videos.full_video_url),
+            trailer_preview_url = COALESCE(EXCLUDED.trailer_preview_url, scraper.myanmar_videos.trailer_preview_url),
+            thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, scraper.myanmar_videos.thumbnail_url),
+            clean_thumbnail_url = COALESCE(EXCLUDED.clean_thumbnail_url, scraper.myanmar_videos.clean_thumbnail_url),
+            duration_seconds = COALESCE(EXCLUDED.duration_seconds, scraper.myanmar_videos.duration_seconds),
+            duration_formatted = COALESCE(EXCLUDED.duration_formatted, scraper.myanmar_videos.duration_formatted),
+            views_count = GREATEST(EXCLUDED.views_count, scraper.myanmar_videos.views_count),
+            views_raw = EXCLUDED.views_raw,
+            rating_score = COALESCE(EXCLUDED.rating_score, scraper.myanmar_videos.rating_score),
+            rating_raw = EXCLUDED.rating_raw,
+            categories = EXCLUDED.categories,
+            tags = EXCLUDED.tags,
+            actors = EXCLUDED.actors,
+            published_at = COALESCE(EXCLUDED.published_at, scraper.myanmar_videos.published_at),
+            raw_payload = EXCLUDED.raw_payload,
+            updated_at = now();
+
+        inserted_count := inserted_count + 1;
+    END LOOP;
+
+    RETURN jsonb_build_object('success', true, 'count', inserted_count);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scraper_upsert_myanmar_videos(jsonb) TO service_role;
+
+-- QUERY VIDEOS RPC
+CREATE OR REPLACE FUNCTION public.scraper_get_myanmar_videos(
+    p_source_site text DEFAULT NULL,
+    p_tag text DEFAULT NULL,
+    p_category text DEFAULT NULL,
+    p_search text DEFAULT NULL,
+    p_sort text DEFAULT 'newest',
+    p_limit int DEFAULT 24,
+    p_offset int DEFAULT 0
+)
+RETURNS SETOF scraper.myanmar_videos
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = scraper, public
+AS $$
+    SELECT * FROM scraper.myanmar_videos
+    WHERE (p_source_site IS NULL OR source_site = p_source_site)
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'myanmar')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+      )
+      -- Search Filter
+      AND (
+          p_search IS NULL 
+          OR trim(p_search) = ''
+          OR (
+              SELECT bool_and(
+                lower(title) LIKE '%' || word || '%'
+                OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+              )
+              FROM unnest(string_to_array(lower(trim(p_search)), ' ')) AS word
+              WHERE length(word) > 0
+          )
+      )
+      AND status = 'active'
+    ORDER BY
+      CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
+      CASE WHEN p_sort = 'rating' THEN rating_score END DESC NULLS LAST,
+      CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
+      CASE WHEN p_sort = 'oldest' THEN published_at END ASC NULLS LAST,
+      published_at DESC NULLS LAST,
+      scraped_at DESC,
+      id DESC
+    LIMIT p_limit OFFSET p_offset;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scraper_get_myanmar_videos(text, text, text, text, text, int, int) TO anon, authenticated, service_role;
+
+-- COUNT VIDEOS RPC
+CREATE OR REPLACE FUNCTION public.scraper_count_myanmar_videos(
+    p_source_site text DEFAULT NULL,
+    p_tag text DEFAULT NULL,
+    p_category text DEFAULT NULL,
+    p_search text DEFAULT NULL
+)
+RETURNS bigint
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = scraper, public
+AS $$
+    SELECT count(*) FROM scraper.myanmar_videos
+    WHERE (p_source_site IS NULL OR source_site = p_source_site)
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'myanmar')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+      )
+      -- Search Filter
+      AND (
+          p_search IS NULL 
+          OR trim(p_search) = ''
+          OR (
+              SELECT bool_and(
+                lower(title) LIKE '%' || word || '%'
+                OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+              )
+              FROM unnest(string_to_array(lower(trim(p_search)), ' ')) AS word
+              WHERE length(word) > 0
+          )
+      )
+      AND status = 'active';
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scraper_count_myanmar_videos(text, text, text, text) TO anon, authenticated, service_role;
+
+-- GET SINGLE VIDEO BY ID RPC
+CREATE OR REPLACE FUNCTION public.scraper_get_myanmar_video_by_id(p_id uuid)
+RETURNS SETOF scraper.myanmar_videos
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = scraper, public
+AS $$
+    SELECT * FROM scraper.myanmar_videos WHERE id = p_id LIMIT 1;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scraper_get_myanmar_video_by_id(uuid) TO anon, authenticated, service_role;
+
+-- GET RELATED VIDEOS RPC
+CREATE OR REPLACE FUNCTION public.scraper_get_myanmar_related_videos(
+    p_video_id uuid,
+    p_limit int DEFAULT 8
+)
+RETURNS SETOF scraper.myanmar_videos
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = scraper, public
+AS $$
+    WITH current_video AS (
+        SELECT tags, categories FROM scraper.myanmar_videos WHERE id = p_video_id LIMIT 1
+    )
+    SELECT mv.*
+    FROM scraper.myanmar_videos mv, current_video cv
+    WHERE mv.id <> p_video_id
+      AND (
+        mv.tags && cv.tags
+        OR mv.categories && cv.categories
+      )
+    ORDER BY mv.published_at DESC NULLS LAST, mv.views_count DESC
+    LIMIT p_limit;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scraper_get_myanmar_related_videos(uuid, int) TO anon, authenticated, service_role;

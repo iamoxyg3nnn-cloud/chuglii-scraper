@@ -1,0 +1,366 @@
+"""
+Buu Mal (Myanmar) Complete Scraper Pipeline
+Target: Buu Mal (https://www.buumal.com)
+Stores into Supabase isolated schema: 'scraper.myanmar_videos'
+Features:
+ - Multi-threaded listing and detail page enrichment (ThreadPoolExecutor)
+ - Comprehensive tag and pagination backfill with persistent checkpoints
+ - 24/7 continuous watcher daemon mode
+ - Local post-ID deduplication cache for <1ms checks
+ - Direct Cloudflare R2 MP4 stream detection
+ - Automatic exponential backoff and safe retries
+"""
+
+import os
+import sys
+import re
+import json
+import time
+import argparse
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup
+from curl_cffi import requests
+
+# Ensure root paths are in sys.path
+CURRENT_DIR = Path(__file__).resolve().parent
+CATEGORIES_DIR = CURRENT_DIR.parent
+SCRAPER_DIR = CATEGORIES_DIR.parent
+PROJECT_ROOT = SCRAPER_DIR.parent
+
+for p in [str(CURRENT_DIR), str(SCRAPER_DIR), str(PROJECT_ROOT)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from scraper.categories.myanmar.polish import polish_buumal_record
+from scraper.db import (
+    upsert_myanmar_videos_batch,
+    get_myanmar_videos,
+    wait_for_supabase,
+    is_supabase_healthy
+)
+
+BASE_URL = "https://www.buumal.com"
+CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
+KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
+
+# Supported Buu Mal categories and tags
+BUUMAL_TAGS = {
+    "all": "All Videos",
+    "myanmar": "Myanmar",
+    "mamagyi": "VIP. Ma Ma Gyi",
+    "mmporns": "MM Porns",
+    "drkogyi": "VIP. Dr Ko Gyi",
+    "samusar": "Samusar",
+    "drhmonegyi": "Dr.Hmone Gyi",
+    "mmhdhub": "MM HD Hub",
+    "kosargyi": "Ko Sar Gyi",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache & Checkpoint Persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_known_ids() -> Set[str]:
+    """Loads cached post IDs for deduplication."""
+    if KNOWN_IDS_FILE.exists():
+        try:
+            data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return set(data)
+        except Exception as e:
+            print(f"[!] Warning reading known IDs cache: {e}")
+    return set()
+
+def save_known_ids(known_ids: Set[str]):
+    """Persists updated set of seen post IDs."""
+    try:
+        KNOWN_IDS_FILE.write_text(json.dumps(sorted(list(known_ids)), indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[!] Failed to save known IDs cache: {e}")
+
+def load_checkpoint() -> Dict[str, Any]:
+    """Loads crawler checkpoint state."""
+    if CHECKPOINT_FILE.exists():
+        try:
+            return json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"tag": "myanmar", "last_page": 1, "total_scraped": 0}
+
+def save_checkpoint(data: Dict[str, Any]):
+    """Saves crawler checkpoint state."""
+    try:
+        CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[!] Failed to write checkpoint: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTP Request Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_request(url: str, retries: int = 4, timeout: int = 25) -> Optional[str]:
+    """Fetches a URL using curl_cffi with Chrome TLS impersonation and exponential backoff."""
+    for attempt in range(retries):
+        try:
+            res = requests.get(
+                url,
+                impersonate="chrome124",
+                timeout=timeout,
+                headers={
+                    "User-Agent": CHROME_UA,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.buumal.com/"
+                }
+            )
+            if res.status_code == 200:
+                return res.text
+            elif res.status_code in (404, 410):
+                return None
+            else:
+                time.sleep(1.5 * (attempt + 1))
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Request failed for {url}: {e}")
+                return None
+            time.sleep(2 * (attempt + 1))
+    return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parsing Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_listing_url(page: int = 1, tag: Optional[str] = "myanmar") -> str:
+    """Builds appropriate URL for Buu Mal catalog listing."""
+    tag_clean = (tag or "").strip().lower()
+    if tag_clean and tag_clean != "all":
+        if page <= 1:
+            return f"{BASE_URL}?tag={tag_clean}"
+        return f"{BASE_URL}?tag={tag_clean}&page={page}"
+    else:
+        if page <= 1:
+            return BASE_URL
+        return f"{BASE_URL}?page={page}"
+
+def parse_listing_page(html: str) -> List[Dict[str, Any]]:
+    """Extracts video card summaries from Buu Mal listing page HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    items = []
+    
+    # Columns contain video cards: <div class="column ..."><a href="https://www.buumal.com/video/ID">...</a></div>
+    columns = soup.select(".column")
+    for col in columns:
+        link = col.find("a", href=True)
+        if not link:
+            continue
+        href = link.get("href", "")
+        if "/video/" not in href:
+            continue
+            
+        post_id = href.rstrip("/").split("/")[-1]
+        if not post_id or len(post_id) < 3:
+            continue
+            
+        # Detail URL
+        detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+        
+        # Thumbnail image
+        img = col.find("img")
+        thumbnail_url = img.get("src") if img else None
+        
+        # Title and relative time
+        paragraphs = col.select(".card-content p, .content p")
+        title = ""
+        relative_time = ""
+        if paragraphs:
+            title = paragraphs[0].get_text(strip=True)
+            if len(paragraphs) > 1:
+                relative_time = paragraphs[1].get_text(strip=True)
+        
+        items.append({
+            "source_site": "buumal",
+            "source_post_id": post_id,
+            "detail_url": detail_url,
+            "thumbnail_url": thumbnail_url,
+            "title": title,
+            "relative_time": relative_time
+        })
+        
+    return items
+
+def enrich_video_detail(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetches video detail page and extracts player source URL and tags."""
+    detail_url = item.get("detail_url")
+    if not detail_url:
+        return item
+
+    html = make_request(detail_url, retries=3, timeout=15)
+    if not html:
+        return item
+
+    soup = BeautifulSoup(html, "html.parser")
+    
+    # Full title from title tag or h1 if better
+    if soup.title and soup.title.string:
+        page_title = soup.title.string.strip()
+        cleaned_page_title = page_title.replace("Buu Mal (ဘူးမယ်)", "").strip()
+        if cleaned_page_title:
+            item["title"] = cleaned_page_title
+
+    # Extract direct video source from <video><source src="..."/></video>
+    source_tag = soup.find("source")
+    if source_tag and source_tag.get("src"):
+        item["full_video_url"] = source_tag.get("src")
+        item["stream_url"] = source_tag.get("src")
+        item["video_mime_type"] = source_tag.get("type") or "video/mp4"
+
+    # Extract tags
+    tags = []
+    for a in soup.find_all("a", href=True):
+        if "?tag=" in a["href"]:
+            t_txt = a.get_text(strip=True)
+            if t_txt and t_txt.lower() not in [t.lower() for t in tags]:
+                tags.append(t_txt)
+                
+    for tag_span in soup.select(".tag"):
+        txt = tag_span.get_text(strip=True)
+        if txt and txt.lower() not in ["tags", "tag"] and txt.lower() not in [t.lower() for t in tags]:
+            tags.append(txt)
+
+    if tags:
+        item["tags"] = tags
+
+    return item
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline Execution Flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scrape_page(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) -> List[Dict[str, Any]]:
+    """Scrapes, enriches, and polishes a single catalog page."""
+    url = build_listing_url(page_num, tag)
+    print(f"[*] Crawling [{tag}] page {page_num}: {url}")
+    
+    html = make_request(url)
+    if not html:
+        print(f"[!] Empty response for page {page_num}")
+        return []
+
+    cards = parse_listing_page(html)
+    print(f"    Found {len(cards)} cards on page {page_num}")
+    
+    # Filter unseen IDs
+    new_items = [c for c in cards if c["source_post_id"] not in known_ids]
+    if not new_items:
+        print(f"    All {len(cards)} items already in deduplication cache.")
+        return []
+
+    print(f"    Enriching {len(new_items)} new videos with {workers} workers...")
+    enriched_items = []
+    
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(enrich_video_detail, item): item for item in new_items}
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                if res and res.get("source_post_id"):
+                    enriched_items.append(res)
+            except Exception as e:
+                print(f"[!] Error enriching item: {e}")
+
+    # Polish records
+    polished = []
+    for raw in enriched_items:
+        try:
+            p = polish_buumal_record(raw)
+            polished.append(p)
+        except Exception as e:
+            print(f"[!] Error polishing record {raw.get('source_post_id')}: {e}")
+
+    return polished
+
+def run_pipeline(
+    tag: str = "myanmar",
+    start_page: int = 1,
+    max_pages: int = 5,
+    workers: int = 6,
+    batch_size: int = 20,
+    continuous: bool = False
+):
+    """Main pipeline loop with batch persistence and state saving."""
+    print("============================================================================")
+    print(" CHUGLII - BUU MAL (MYANMAR) SCRAPER PIPELINE")
+    print(f" Target Tag     : {tag} ({BUUMAL_TAGS.get(tag, 'Custom')})")
+    print(f" Start Page     : {start_page}")
+    print(f" Max Pages      : {max_pages}")
+    print(f" Concurrency    : {workers} workers")
+    print(f" Storage Target : scraper.myanmar_videos (100% Segregated)")
+    print("============================================================================")
+
+    known_ids = load_known_ids()
+    print(f"[+] Loaded {len(known_ids)} known post IDs from local cache.")
+
+    current_page = start_page
+    pages_processed = 0
+    total_upserted = 0
+
+    while True:
+        try:
+            records = scrape_page(current_page, tag, known_ids, workers=workers)
+            if records:
+                print(f"[+] Upserting {len(records)} polished records into scraper.myanmar_videos...")
+                resp = upsert_myanmar_videos_batch(records)
+                print(f"    Upsert result: {resp}")
+
+                for r in records:
+                    known_ids.add(r["source_post_id"])
+                save_known_ids(known_ids)
+                total_upserted += len(records)
+            else:
+                print(f"[-] No new items to upsert on page {current_page}.")
+
+            pages_processed += 1
+            current_page += 1
+
+            save_checkpoint({
+                "tag": tag,
+                "last_page": current_page,
+                "total_scraped": total_upserted,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            if not continuous and pages_processed >= max_pages:
+                print(f"[✓] Finished batch run of {max_pages} pages. Total upserted: {total_upserted}")
+                break
+
+            time.sleep(1.0)
+
+        except KeyboardInterrupt:
+            print("\n[!] User interrupted scraping. State saved.")
+            break
+        except Exception as e:
+            print(f"[!] Unexpected error in crawler loop: {e}")
+            time.sleep(5)
+
+    print(f"Pipeline finished. Total saved videos: {total_upserted}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Buu Mal Myanmar Scraper Pipeline")
+    parser.add_argument("--tag", default="myanmar", help="Tag to scrape (myanmar, mamagyi, mmporns, all, etc.)")
+    parser.add_argument("--start-page", type=int, default=1, help="Starting page number")
+    parser.add_argument("--pages", type=int, default=3, help="Number of pages to scrape")
+    parser.add_argument("--workers", type=int, default=6, help="Thread pool concurrency")
+    parser.add_argument("--daemon", action="store_true", help="Run 24/7 continuous watcher daemon")
+    args = parser.parse_args()
+
+    run_pipeline(
+        tag=args.tag,
+        start_page=args.start_page,
+        max_pages=args.pages,
+        workers=args.workers,
+        continuous=args.daemon
+    )

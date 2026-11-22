@@ -485,14 +485,14 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
                         "embed_url": resolved_url.split("#")[0]
                     })
 
-        # Rank mirrors: VidSpeed -> LuluStream -> VOE HD -> FC2Stream -> Streamtape -> EarnVids
+        # Rank mirrors: LuluStream -> FC2Stream -> VOE HD -> Streamtape -> VidSpeed -> EarnVids
         def locker_rank(s):
             n = s["name"].lower()
-            if "vidspeed" in n or "vas" in n: return 0
-            if "lulu" in n or "luc" in n: return 1
+            if "lulu" in n or "luc" in n: return 0
+            if "fc2" in n or "fst" in n: return 1
             if "voe" in n: return 2
-            if "fc2" in n or "fst" in n: return 3
-            if "streamtape" in n or "st" in n: return 4
+            if "streamtape" in n or "st" in n: return 3
+            if "vidspeed" in n or "vas" in n: return 4
             if "earnvids" in n or "evs" in n: return 5
             return 6
 

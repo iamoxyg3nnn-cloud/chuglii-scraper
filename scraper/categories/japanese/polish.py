@@ -58,16 +58,17 @@ def polish_supjav_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     raw_cats = [c.lower().strip() for c in raw_item.get("categories", []) if c and c != "viral-mms"]
     categories = list(set(["japanese"] + raw_cats))
 
-    # Servers list: prioritize active working lockers (VidSpeed -> LuluStream -> VOE -> FC2Stream -> Streamtape)
+    # Servers list: prioritize active working lockers (LuluStream -> FC2Stream -> VOE HD -> Streamtape -> VidSpeed -> EarnVids)
     servers = raw_item.get("servers", [])
     primary_embed = ""
     if servers:
-        vidspeed_server = next((s for s in servers if "vidspeed" in s["name"].lower() or "vas" in s["name"].lower()), None)
         lulu_server = next((s for s in servers if "lulu" in s["name"].lower() or "luc" in s["name"].lower()), None)
-        voe_server = next((s for s in servers if "voe" in s["name"].lower()), None)
         fc2_server = next((s for s in servers if "fc2" in s["name"].lower() or "fst" in s["name"].lower()), None)
+        voe_server = next((s for s in servers if "voe" in s["name"].lower()), None)
         st_server = next((s for s in servers if "streamtape" in s["name"].lower() or "st" in s["name"].lower()), None)
-        best = vidspeed_server or lulu_server or voe_server or fc2_server or st_server or servers[0]
+        vidspeed_server = next((s for s in servers if "vidspeed" in s["name"].lower() or "vas" in s["name"].lower()), None)
+        evs_server = next((s for s in servers if "earnvids" in s["name"].lower() or "evs" in s["name"].lower()), None)
+        best = lulu_server or fc2_server or voe_server or st_server or vidspeed_server or evs_server or servers[0]
         primary_embed = best["embed_url"]
 
     return {

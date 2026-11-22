@@ -65,15 +65,24 @@ BUUMAL_TAGS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_known_ids() -> Set[str]:
-    """Loads cached post IDs for deduplication."""
+    """Loads cached post IDs: primary Supabase, fallback local JSON."""
+    known_ids: Set[str] = set()
     if KNOWN_IDS_FILE.exists():
         try:
             data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return set(data)
+                known_ids.update(str(x) for x in data)
         except Exception as e:
             print(f"[!] Warning reading known IDs cache: {e}")
-    return set()
+    try:
+        from scraper.db import get_scraper_known_post_ids
+        sb_ids = get_scraper_known_post_ids("myanmar")
+        if sb_ids:
+            known_ids.update(str(x) for x in sb_ids)
+            save_known_ids(known_ids)
+    except Exception as e:
+        print(f"  [!] Note: Supabase Myanmar ID sync bypassed ({e}).")
+    return known_ids
 
 def save_known_ids(known_ids: Set[str]):
     """Persists updated set of seen post IDs."""
@@ -83,20 +92,39 @@ def save_known_ids(known_ids: Set[str]):
         print(f"[!] Failed to save known IDs cache: {e}")
 
 def load_checkpoint() -> Dict[str, Any]:
-    """Loads crawler checkpoint state."""
+    """Loads crawler checkpoint state: Supabase-first with local fallback."""
+    try:
+        from scraper.db import get_scraper_checkpoint
+        sb_cp = get_scraper_checkpoint("myanmar")
+        if sb_cp and isinstance(sb_cp, dict) and "current_page" in sb_cp:
+            return sb_cp
+    except Exception:
+        pass
+
     if CHECKPOINT_FILE.exists():
         try:
-            return json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            if "last_page" in data and "current_page" not in data:
+                data["current_page"] = data["last_page"]
+            return data
         except Exception:
             pass
-    return {"tag": "myanmar", "last_page": 1, "total_scraped": 0}
+    return {"current_page": 34, "max_pages": 3690, "total_ingested": 0}
 
 def save_checkpoint(data: Dict[str, Any]):
-    """Saves crawler checkpoint state."""
+    """Saves crawler checkpoint state to Supabase and mirrors to local file."""
     try:
+        from scraper.db import set_scraper_checkpoint
+        set_scraper_checkpoint("myanmar", data)
+    except Exception as e:
+        print(f"[!] Note: Supabase Myanmar checkpoint sync bypassed ({e}).")
+
+    try:
+        if "current_page" in data and "last_page" not in data:
+            data["last_page"] = data["current_page"]
         CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as e:
-        print(f"[!] Failed to write checkpoint: {e}")
+        print(f"[!] Failed to write local checkpoint: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP Request Utilities

@@ -9,9 +9,10 @@ Built with curl_cffi and BeautifulSoup for ultra-fast, zero-dependency cloud exe
 import sys
 import re
 import time
+import json
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
@@ -31,6 +32,36 @@ from scraper.db import upsert_scraped_videos_batch
 BASE_URL = "https://mmsvibex.life"
 SOURCE_NAME = "mmsvibex"
 PARENT_CATEGORY = "viral-mms"
+KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
+
+def load_known_ids() -> Set[str]:
+    """Loads cached post IDs: primary Supabase, fallback local JSON."""
+    known_ids: Set[str] = set()
+    if KNOWN_IDS_FILE.exists():
+        try:
+            data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                known_ids.update(str(x) for x in data)
+        except Exception:
+            pass
+
+    try:
+        from scraper.db import get_scraper_known_post_ids
+        sb_ids = get_scraper_known_post_ids("viral-mms")
+        if sb_ids:
+            known_ids.update(str(x) for x in sb_ids)
+            save_known_ids(known_ids)
+    except Exception as e:
+        print(f"  [!] Note: Supabase MMS ID sync bypassed ({e}).")
+
+    return known_ids
+
+def save_known_ids(known_ids: Set[str]) -> None:
+    """Saves set of known post IDs to local cache."""
+    try:
+        KNOWN_IDS_FILE.write_text(json.dumps(sorted(list(known_ids))), encoding="utf-8")
+    except Exception as e:
+        print(f"[!] Failed to save MMS known IDs cache: {e}")
 
 def derive_full_video_url(trailer_url: Optional[str], post_id: Optional[str] = None) -> Optional[str]:
     """Derives direct CDN processed MP4 stream URL from trailer preview or post_id."""
@@ -157,12 +188,16 @@ def run_scraper_pipeline(
     start_page: int = 1,
     filter_mode: str = "latest",
     category: Optional[str] = None,
-    enrich_details: bool = False
+    enrich_details: bool = False,
+    known_ids: Optional[Set[str]] = None
 ) -> int:
-    """Orchestrates extraction, polishing, and batch upsert into Supabase."""
+    """Orchestrates extraction, deduplication, polishing, and batch upsert into Supabase."""
     print("=" * 65)
     print(f"Viral MMS Ingestion | Mode: {filter_mode} | Pages: {start_page} to {start_page + pages - 1}")
     print("=" * 65)
+
+    if known_ids is None:
+        known_ids = load_known_ids()
 
     total_upserted = 0
     for p in range(start_page, start_page + pages):
@@ -170,16 +205,24 @@ def run_scraper_pipeline(
         if not items:
             break
 
+        new_items = [itm for itm in items if str(itm.get("post_id")) not in known_ids]
+        if not new_items:
+            print(f"  Page {p}: Up to date (all {len(items)} releases already indexed)")
+            continue
+
         polished_batch = []
-        for itm in items:
+        for itm in new_items:
             polished = polish_scraped_record(itm)
             polished_batch.append(polished)
 
         res = upsert_scraped_videos_batch(polished_batch)
         count = len(polished_batch)
         total_upserted += count
+        for itm in new_items:
+            known_ids.add(str(itm.get("post_id")))
+        save_known_ids(known_ids)
         db_status = res.get('success', True) if isinstance(res, dict) else (bool(res) if res is not None else False)
-        print(f"  [✓] Page {p}: Upserted {count} Viral MMS videos (DB status: {db_status})")
+        print(f"  [✓] Page {p}: Ingested {count} new Viral MMS videos (DB status: {db_status})")
         time.sleep(0.5)
 
     return total_upserted

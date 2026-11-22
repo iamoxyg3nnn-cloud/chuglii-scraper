@@ -1,5 +1,5 @@
 name: Chuglii Myanmar Auto Scraper
-run-name: Myanmar Scraper ${{ github.event.inputs.pages && format('({0} pages)', github.event.inputs.pages) || '(scheduled)' }}
+run-name: Myanmar Scraper ${{ github.event.inputs.pages && format('({0} pages)', github.event.inputs.pages) || '(scheduled full-site)' }}
 
 on:
   workflow_dispatch:
@@ -9,16 +9,24 @@ on:
         required: false
         default: 'myanmar'
       pages:
-        description: 'Number of pages to scrape'
+        description: 'Number of pages per tag'
         required: false
-        default: '15'
+        default: '25'
       workers:
         description: 'Number of concurrent enrichment workers'
         required: false
         default: '6'
+      all_tags:
+        description: 'Crawl all site tags sequentially (full website)'
+        required: false
+        default: 'true'
+      continuous:
+        description: 'Self-chain upon completion for continuous 24/7 indexing'
+        required: false
+        default: 'true'
   schedule:
-    # Runs every 6 hours to capture new Myanmar releases
-    - cron: '30 */6 * * *'
+    # Runs every 4 hours to index newly published Myanmar videos
+    - cron: '15 */4 * * *'
 
 concurrency:
   group: scraper-myanmar
@@ -26,12 +34,13 @@ concurrency:
 
 jobs:
   scrape-myanmar:
-    name: Scrape Buu Mal (Myanmar)
+    name: Scrape Buu Mal (Myanmar Full Catalog)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     permissions:
       contents: write
+      actions: write
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -54,24 +63,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
 
-      - name: Run Myanmar Scraper Pipeline
+      - name: Run Myanmar Full Catalog Scraper
+        id: scrape-step
         env:
           TARGET_TAG: ${{ github.event.inputs.tag || 'myanmar' }}
-          PAGES: ${{ github.event.inputs.pages || '15' }}
+          PAGES: ${{ github.event.inputs.pages || '25' }}
           WORKERS: ${{ github.event.inputs.workers || '6' }}
+          ALL_TAGS: ${{ github.event.inputs.all_tags || 'true' }}
         run: |
           echo "=========================================================="
-          echo "Starting Buu Mal (Myanmar) Scraper"
+          echo "Starting Buu Mal (Myanmar) Full Catalog Scraper"
           echo "Target Tag: $TARGET_TAG"
           echo "Pages:      $PAGES"
           echo "Workers:    $WORKERS"
+          echo "All Tags:   $ALL_TAGS"
           echo "Storage:    scraper.myanmar_videos (Segregated Isolated)"
           echo "=========================================================="
 
-          python -u scraper/categories/myanmar/pipeline.py \
-            --tag "$TARGET_TAG" \
-            --pages "$PAGES" \
-            --workers "$WORKERS"
+          CMD="python -u scraper/categories/myanmar/pipeline.py --pages $PAGES --workers $WORKERS"
+          if [ "$ALL_TAGS" = "true" ]; then
+            CMD="$CMD --all-tags"
+          else
+            CMD="$CMD --tag $TARGET_TAG"
+          fi
+
+          echo "[*] Executing: $CMD"
+          eval $CMD
 
       - name: Persist Scraper Progress Checkpoint
         if: always()
@@ -88,3 +105,21 @@ jobs:
           else
             echo "[*] No checkpoint changes to commit."
           fi
+
+      - name: Autotrigger successor run for continuous full-site indexing
+        if: ${{ always() && steps.scrape-step.outcome == 'success' && (github.event.inputs.continuous == 'true' || github.event_name == 'schedule') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo ""
+          echo "+=============================================================+"
+          echo "|  BATCH COMPLETED CLEANLY - DISPATCHING SUCCESSOR            |"
+          echo "+=============================================================+"
+          gh workflow run scrape-myanmar.yml \
+            --ref "${{ github.ref_name }}" \
+            -f tag="${{ github.event.inputs.tag || 'myanmar' }}" \
+            -f pages="${{ github.event.inputs.pages || '25' }}" \
+            -f workers="${{ github.event.inputs.workers || '6' }}" \
+            -f all_tags="${{ github.event.inputs.all_tags || 'true' }}" \
+            -f continuous="true" || true
+          echo "[✓] Continuous successor dispatched."

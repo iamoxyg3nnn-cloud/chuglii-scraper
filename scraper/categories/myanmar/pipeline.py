@@ -285,75 +285,86 @@ def scrape_page(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) 
 
 def run_pipeline(
     tag: str = "myanmar",
-    start_page: int = 1,
+    start_page: Optional[int] = None,
     max_pages: int = 5,
     workers: int = 6,
     batch_size: int = 20,
-    continuous: bool = False
+    continuous: bool = False,
+    all_tags: bool = False
 ):
     """Main pipeline loop with batch persistence and state saving."""
+    tags_to_crawl = list(BUUMAL_TAGS.keys()) if all_tags else [tag]
+
     print("============================================================================")
     print(" CHUGLII - BUU MAL (MYANMAR) SCRAPER PIPELINE")
-    print(f" Target Tag     : {tag} ({BUUMAL_TAGS.get(tag, 'Custom')})")
-    print(f" Start Page     : {start_page}")
-    print(f" Max Pages      : {max_pages}")
+    print(f" Target Tags    : {', '.join(tags_to_crawl)}")
     print(f" Concurrency    : {workers} workers")
+    print(f" Mode           : {'24/7 Daemon' if continuous else 'Batch Backfill'}")
     print(f" Storage Target : scraper.myanmar_videos (100% Segregated)")
     print("============================================================================")
 
     known_ids = load_known_ids()
     print(f"[+] Loaded {len(known_ids)} known post IDs from local cache.")
 
-    current_page = start_page
-    pages_processed = 0
+    checkpoint = load_checkpoint()
     total_upserted = 0
 
-    while True:
-        try:
-            records = scrape_page(current_page, tag, known_ids, workers=workers)
-            if records:
-                print(f"[+] Upserting {len(records)} polished records into scraper.myanmar_videos...")
-                resp = upsert_myanmar_videos_batch(records)
-                print(f"    Upsert result: {resp}")
+    for current_tag in tags_to_crawl:
+        print(f"\n>>> Starting crawl for category/tag: [{current_tag}] ({BUUMAL_TAGS.get(current_tag, 'Custom')})")
+        tag_start = start_page if start_page is not None and start_page > 0 else checkpoint.get(f"last_page_{current_tag}", checkpoint.get("last_page", 1))
+        current_page = tag_start
+        pages_processed = 0
 
-                for r in records:
-                    known_ids.add(r["source_post_id"])
-                save_known_ids(known_ids)
-                total_upserted += len(records)
-            else:
-                print(f"[-] No new items to upsert on page {current_page}.")
+        while True:
+            try:
+                records = scrape_page(current_page, current_tag, known_ids, workers=workers)
+                if records:
+                    print(f"[+] Upserting {len(records)} polished records into scraper.myanmar_videos...")
+                    resp = upsert_myanmar_videos_batch(records)
+                    print(f"    Upsert result: {resp}")
 
-            pages_processed += 1
-            current_page += 1
+                    for r in records:
+                        known_ids.add(r["source_post_id"])
+                    save_known_ids(known_ids)
+                    total_upserted += len(records)
+                else:
+                    print(f"[-] No new items to upsert on page {current_page}.")
 
-            save_checkpoint({
-                "tag": tag,
-                "last_page": current_page,
-                "total_scraped": total_upserted,
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            })
+                pages_processed += 1
+                current_page += 1
 
-            if not continuous and pages_processed >= max_pages:
-                print(f"[✓] Finished batch run of {max_pages} pages. Total upserted: {total_upserted}")
-                break
+                checkpoint[f"last_page_{current_tag}"] = current_page
+                checkpoint["last_page"] = current_page
+                checkpoint["last_tag"] = current_tag
+                checkpoint["total_scraped"] = checkpoint.get("total_scraped", 0) + len(records)
+                checkpoint["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                save_checkpoint(checkpoint)
 
-            time.sleep(1.0)
+                if not continuous and pages_processed >= max_pages:
+                    print(f"[✓] Finished batch run of {max_pages} pages for tag [{current_tag}].")
+                    break
 
-        except KeyboardInterrupt:
-            print("\n[!] User interrupted scraping. State saved.")
-            break
-        except Exception as e:
-            print(f"[!] Unexpected error in crawler loop: {e}")
-            time.sleep(5)
+                time.sleep(1.0)
 
-    print(f"Pipeline finished. Total saved videos: {total_upserted}")
+            except KeyboardInterrupt:
+                print("\n[!] User interrupted scraping. State saved.")
+                return
+            except Exception as e:
+                print(f"[!] Unexpected error in crawler loop: {e}")
+                time.sleep(5)
+
+    print(f"\n============================================================================")
+    print(f"Pipeline run complete. Total newly saved videos: {total_upserted}")
+    print(f"Total known index size: {len(known_ids)} videos")
+    print(f"============================================================================")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Buu Mal Myanmar Scraper Pipeline")
     parser.add_argument("--tag", default="myanmar", help="Tag to scrape (myanmar, mamagyi, mmporns, all, etc.)")
-    parser.add_argument("--start-page", type=int, default=1, help="Starting page number")
-    parser.add_argument("--pages", type=int, default=3, help="Number of pages to scrape")
+    parser.add_argument("--start-page", type=int, default=None, help="Starting page number (defaults to checkpoint)")
+    parser.add_argument("--pages", type=int, default=5, help="Number of pages to scrape")
     parser.add_argument("--workers", type=int, default=6, help="Thread pool concurrency")
+    parser.add_argument("--all-tags", action="store_true", help="Crawl across all site tags sequentially")
     parser.add_argument("--daemon", action="store_true", help="Run 24/7 continuous watcher daemon")
     args = parser.parse_args()
 
@@ -362,5 +373,6 @@ if __name__ == "__main__":
         start_page=args.start_page,
         max_pages=args.pages,
         workers=args.workers,
-        continuous=args.daemon
+        continuous=args.daemon,
+        all_tags=args.all_tags
     )

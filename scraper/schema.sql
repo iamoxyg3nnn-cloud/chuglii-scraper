@@ -259,13 +259,40 @@ SET search_path = scraper, public
 AS $$
     SELECT * FROM scraper.videos
     WHERE (p_source_site IS NULL OR source_site = p_source_site)
-      AND (p_tag IS NULL OR tags @> ARRAY[p_tag] OR p_tag = ANY(categories))
-      AND (p_category IS NULL OR categories @> ARRAY[p_category])
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'viral-mms')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag / Section Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(categories)
+          OR (lower(trim(p_tag)) IN ('bangladeshi', 'bangladesi') AND ('bangladesi' = ANY(categories) OR 'bangladeshi' = ANY(tags)))
+          OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || lower(replace(trim(p_tag), '-', ' ')) || '%'
+      )
+      -- Multi-Word Search
       AND (
           p_search IS NULL 
-          OR title ILIKE '%' || p_search || '%'
-          OR array_to_string(tags, ' ') ILIKE '%' || p_search || '%'
-          OR array_to_string(actors, ' ') ILIKE '%' || p_search || '%'
+          OR trim(p_search) = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM unnest(string_to_array(trim(regexp_replace(lower(p_search), '\s+', ' ', 'g')), ' ')) AS word
+              WHERE word <> ''
+                AND NOT (
+                  lower(title) LIKE '%' || word || '%'
+                  OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+                  OR lower(coalesce(array_to_string(actors, ' '), '')) LIKE '%' || word || '%'
+                )
+          )
       )
     ORDER BY
         CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
@@ -294,13 +321,40 @@ SET search_path = scraper, public
 AS $$
     SELECT count(*) FROM scraper.videos
     WHERE (p_source_site IS NULL OR source_site = p_source_site)
-      AND (p_tag IS NULL OR tags @> ARRAY[p_tag] OR p_tag = ANY(categories))
-      AND (p_category IS NULL OR categories @> ARRAY[p_category])
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'viral-mms')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag / Section Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(categories)
+          OR (lower(trim(p_tag)) IN ('bangladeshi', 'bangladesi') AND ('bangladesi' = ANY(categories) OR 'bangladeshi' = ANY(tags)))
+          OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || lower(replace(trim(p_tag), '-', ' ')) || '%'
+      )
+      -- Multi-Word Search
       AND (
           p_search IS NULL 
-          OR title ILIKE '%' || p_search || '%'
-          OR array_to_string(tags, ' ') ILIKE '%' || p_search || '%'
-          OR array_to_string(actors, ' ') ILIKE '%' || p_search || '%'
+          OR trim(p_search) = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM unnest(string_to_array(trim(regexp_replace(lower(p_search), '\s+', ' ', 'g')), ' ')) AS word
+              WHERE word <> ''
+                AND NOT (
+                  lower(title) LIKE '%' || word || '%'
+                  OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+                  OR lower(coalesce(array_to_string(actors, ' '), '')) LIKE '%' || word || '%'
+                )
+          )
       );
 $$;
 
@@ -497,13 +551,40 @@ SET search_path = scraper, public
 AS $$
     SELECT * FROM scraper.japanese_videos
     WHERE (p_source_site IS NULL OR source_site = p_source_site)
-      AND (p_tag IS NULL OR tags @> ARRAY[p_tag])
-      AND (p_category IS NULL OR categories @> ARRAY[p_category])
-      AND (p_search IS NULL OR (
-            title ILIKE '%' || p_search || '%'
-            OR array_to_string(tags, ' ') ILIKE '%' || p_search || '%'
-            OR array_to_string(actors, ' ') ILIKE '%' || p_search || '%'
-          ))
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'japanese')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(categories)
+          OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || lower(replace(trim(p_tag), '-', ' ')) || '%'
+      )
+      -- Multi-Word Search (maker codes like FC2, SNOS, titles, tags, actors)
+      AND (
+          p_search IS NULL 
+          OR trim(p_search) = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM unnest(string_to_array(trim(regexp_replace(lower(p_search), '\s+', ' ', 'g')), ' ')) AS word
+              WHERE word <> ''
+                AND NOT (
+                  lower(title) LIKE '%' || word || '%'
+                  OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+                  OR lower(coalesce(array_to_string(actors, ' '), '')) LIKE '%' || word || '%'
+                )
+          )
+      )
     ORDER BY
       CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
       CASE WHEN p_sort = 'rating' THEN rating_score END DESC NULLS LAST,
@@ -530,13 +611,40 @@ SET search_path = scraper, public
 AS $$
     SELECT count(*) FROM scraper.japanese_videos
     WHERE (p_source_site IS NULL OR source_site = p_source_site)
-      AND (p_tag IS NULL OR tags @> ARRAY[p_tag])
-      AND (p_category IS NULL OR categories @> ARRAY[p_category])
-      AND (p_search IS NULL OR (
-            title ILIKE '%' || p_search || '%'
-            OR array_to_string(tags, ' ') ILIKE '%' || p_search || '%'
-            OR array_to_string(actors, ' ') ILIKE '%' || p_search || '%'
-          ));
+      -- Category Filter
+      AND (
+          p_category IS NULL 
+          OR lower(trim(p_category)) IN ('all', 'japanese')
+          OR lower(trim(p_category)) = ANY(categories)
+          OR replace(lower(trim(p_category)), ' ', '-') = ANY(categories)
+      )
+      -- Tag Filter
+      AND (
+          p_tag IS NULL 
+          OR lower(trim(p_tag)) = 'all'
+          OR lower(trim(p_tag)) = ANY(tags)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(tags)
+          OR lower(trim(p_tag)) = ANY(categories)
+          OR replace(lower(trim(p_tag)), ' ', '-') = ANY(categories)
+          OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || lower(replace(trim(p_tag), '-', ' ')) || '%'
+      )
+      -- Multi-Word Search
+      AND (
+          p_search IS NULL 
+          OR trim(p_search) = ''
+          OR NOT EXISTS (
+              SELECT 1
+              FROM unnest(string_to_array(trim(regexp_replace(lower(p_search), '\s+', ' ', 'g')), ' ')) AS word
+              WHERE word <> ''
+                AND NOT (
+                  lower(title) LIKE '%' || word || '%'
+                  OR lower(replace(array_to_string(tags, ' '), '-', ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(tags, ' ')) LIKE '%' || word || '%'
+                  OR lower(array_to_string(categories, ' ')) LIKE '%' || word || '%'
+                  OR lower(coalesce(array_to_string(actors, ' '), '')) LIKE '%' || word || '%'
+                )
+          )
+      );
 $$;
 
 GRANT EXECUTE ON FUNCTION public.scraper_count_japanese_videos(text, text, text, text) TO anon, authenticated, service_role;

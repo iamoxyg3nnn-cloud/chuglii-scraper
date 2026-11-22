@@ -64,18 +64,45 @@ COOKIE_CACHE_FILE = CURRENT_DIR / "cf_session.json"
 CACHED_CF_COOKIES: Dict[str, str] = {}
 CACHED_CF_UA: Optional[str] = None
 
-# Strict working locker whitelist: only these 3 are embeddable externally
-# EVS (EarnVids - IP locked) and ST (Streamtape - Domain locked) are strictly skipped
+# Comprehensive working locker map covering all SupJav host mirrors
 WORKING_SERVER_MAP = {
     "VAS": "VidSpeed",
     "VIDSPEED": "VidSpeed",
+    "VDS": "VidSpeed",
     "LUC": "LuluStream",
     "LULU": "LuluStream",
+    "LULUSTREAM": "LuluStream",
+    "LUMIN": "LuluStream",
     "VOE": "VOE HD",
+    "VOE HD": "VOE HD",
     "FST": "FC2Stream",
+    "FC2": "FC2Stream",
+    "FC2STREAM": "FC2Stream",
     "ST": "Streamtape",
+    "STREAMTAPE": "Streamtape",
     "EVS": "EarnVids",
+    "EARNVIDS": "EarnVids",
+    "VIDHIDE": "EarnVids",
 }
+
+def normalize_server_name(raw_name: str) -> str:
+    """Normalizes raw button text to clean, user-facing host names without dropping any mirror."""
+    clean = re.sub(r"\s+", " ", (raw_name or "").strip()).upper()
+    if clean in WORKING_SERVER_MAP:
+        return WORKING_SERVER_MAP[clean]
+    if "VOE" in clean:
+        return "VOE HD"
+    if "VAS" in clean or "VIDSPEED" in clean or "VDS" in clean:
+        return "VidSpeed"
+    if "FC2" in clean or "FST" in clean:
+        return "FC2Stream"
+    if "LULU" in clean or "LUC" in clean or "LUMIN" in clean:
+        return "LuluStream"
+    if "EVS" in clean or "EARN" in clean or "VIDHIDE" in clean:
+        return "EarnVids"
+    if clean == "ST" or "STREAMTAPE" in clean:
+        return "Streamtape"
+    return clean.title() if len(clean) >= 2 else "Mirror"
 
 # Supported SupJav categories covering the entire site catalog
 CATEGORIES_CONFIG = {
@@ -393,7 +420,7 @@ def resolve_server_embed(session: requests.Session, data_link: str, proxy: Optio
     Decodes SupJav reverse-hex data-link via supremejav.php?c=
     and captures the HTTP 302 redirect location.
     """
-    if not data_link or len(data_link) < 32:
+    if not data_link or len(data_link) < 20:
         return None
 
     rev_link = data_link[::-1]
@@ -414,8 +441,7 @@ def resolve_server_embed(session: requests.Session, data_link: str, proxy: Optio
 
 def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Optional[str] = None) -> Dict[str, Any]:
     """
-    Scrapes detail page to extract ONLY working server mirrors (VOE HD, VidSpeed, LuluStream).
-    Skips unworkable hosts (Streamtape, EarnVids) before making any network calls.
+    Scrapes detail page to extract all available video hosts and mirrors without omission.
     Uses centralized session refresh if challenged, preventing browser stampedes.
     """
     try:
@@ -457,17 +483,21 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
             for part_idx, cd in enumerate(cd_servers, start=1):
                 part_label = f" (Part {part_idx})"
                 for btn in cd.select(".btn-server"):
-                    raw_name = btn.get_text().strip().upper()
-                    if raw_name not in WORKING_SERVER_MAP:
-                        continue
-
-                    friendly_name = WORKING_SERVER_MAP[raw_name]
+                    raw_name = btn.get_text().strip()
+                    friendly_name = normalize_server_name(raw_name)
                     full_srv_name = f"{friendly_name}{part_label}"
-                    data_link = btn.get("data-link", "")
-                    resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
-                    if not resolved_url and data_link:
-                        # Fallback to gatekeeper URL; Cloudflare Pages Worker resolves it on the fly
-                        resolved_url = f"https://supjav.com/?l={data_link}"
+                    data_link = btn.get("data-link", "").strip()
+                    direct_href = btn.get("href", "").strip()
+                    
+                    resolved_url = None
+                    if direct_href and direct_href.startswith("http") and "supjav.com" not in direct_href and "javascript" not in direct_href:
+                        resolved_url = direct_href
+                    elif data_link:
+                        resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
+                        if not resolved_url:
+                            # Gatekeeper fallback resolved dynamically by Edge Worker
+                            resolved_url = f"https://supjav.com/?l={data_link}"
+                    
                     if resolved_url:
                         servers.append({
                             "name": full_srv_name,
@@ -475,32 +505,42 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
                         })
         else:
             for btn in soup.select(".btn-server"):
-                raw_name = btn.get_text().strip().upper()
-                if raw_name not in WORKING_SERVER_MAP:
-                    continue
+                raw_name = btn.get_text().strip()
+                friendly_name = normalize_server_name(raw_name)
+                data_link = btn.get("data-link", "").strip()
+                direct_href = btn.get("href", "").strip()
 
-                friendly_name = WORKING_SERVER_MAP[raw_name]
-                data_link = btn.get("data-link", "")
-                resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
-                if not resolved_url and data_link:
-                    # Fallback to gatekeeper URL; Cloudflare Pages Worker resolves it on the fly
-                    resolved_url = f"https://supjav.com/?l={data_link}"
+                resolved_url = None
+                if direct_href and direct_href.startswith("http") and "supjav.com" not in direct_href and "javascript" not in direct_href:
+                    resolved_url = direct_href
+                elif data_link:
+                    resolved_url = resolve_server_embed(session, data_link, proxy=proxy)
+                    if not resolved_url:
+                        # Gatekeeper fallback resolved dynamically by Edge Worker
+                        resolved_url = f"https://supjav.com/?l={data_link}"
+
                 if resolved_url:
                     servers.append({
                         "name": friendly_name,
                         "embed_url": resolved_url.split("#")[0]
                     })
 
-        # Rank mirrors: VOE HD -> VidSpeed -> FC2Stream -> LuluStream -> EarnVids -> Streamtape
-        def locker_rank(s):
+        # Rank mirrors: VOE HD (0) -> VidSpeed (1) -> FC2Stream (2) -> LuluStream (3) -> EarnVids (4) -> Streamtape (5)
+        def server_sort_key(s):
             n = s["name"].lower()
-            if "voe" in n: return 0
-            if "vidspeed" in n or "vas" in n: return 1
-            if "fc2" in n or "fst" in n: return 2
-            if "lulu" in n or "luc" in n: return 3
-            if "earnvids" in n or "evs" in n: return 4
-            if "streamtape" in n or "st" in n: return 5
-            return 6
+            part = 0
+            part_match = re.search(r"part\s*(\d+)", n)
+            if part_match:
+                part = int(part_match.group(1))
+
+            rank = 6
+            if "voe" in n: rank = 0
+            elif "vidspeed" in n or "vas" in n: rank = 1
+            elif "fc2" in n or "fst" in n: rank = 2
+            elif "lulu" in n or "luc" in n: rank = 3
+            elif "earnvids" in n or "evs" in n: rank = 4
+            elif "streamtape" in n or "st" in n: rank = 5
+            return (part, rank)
 
         # Deduplicate server mirrors by cleaned embed URL
         seen_embeds = set()
@@ -512,7 +552,7 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
                 s["embed_url"] = clean_url
                 deduped_servers.append(s)
 
-        deduped_servers.sort(key=locker_rank)
+        deduped_servers.sort(key=server_sort_key)
         tags = [a.get_text(strip=True).lower() for a in soup.select(".tags a, .cats a")]
         actors = [a.get_text(strip=True) for a in soup.select(".cast a, a[href*='/cast/']")]
 

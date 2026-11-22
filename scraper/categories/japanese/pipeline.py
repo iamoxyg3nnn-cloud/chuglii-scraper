@@ -45,6 +45,9 @@ CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML
 # Checkpoint and Cache Paths
 CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
 KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
+COOKIE_CACHE_FILE = CURRENT_DIR / "cf_session.json"
+CACHED_CF_COOKIES: Dict[str, str] = {}
+CACHED_CF_UA: Optional[str] = None
 
 # Strict working locker whitelist: only these 3 are embeddable externally
 # EVS (EarnVids - IP locked) and ST (Streamtape - Domain locked) are strictly skipped
@@ -85,16 +88,66 @@ CATEGORIES_CONFIG = {
 
 DEFAULT_CATEGORIES = ["uncensored-jav", "amateur", "censored-jav", "reducing-mosaic", "popular"]
 
-# ─── Session Factory ─────────────────────────────────────────────────────────
+# ─── Cloudflare Session Caching & Session Factory ───────────────────────────
+
+def load_cached_cf_session(session: requests.Session) -> bool:
+    """Loads cached Cloudflare session cookies and User-Agent if available."""
+    global CACHED_CF_COOKIES, CACHED_CF_UA
+    try:
+        from scraper.db import get_scraper_checkpoint
+        sb_chk = get_scraper_checkpoint("supjav_cf_session")
+        if sb_chk and "cookies" in sb_chk and sb_chk["cookies"]:
+            CACHED_CF_COOKIES = sb_chk.get("cookies", {})
+            CACHED_CF_UA = sb_chk.get("user_agent")
+        elif COOKIE_CACHE_FILE.exists():
+            with open(COOKIE_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                CACHED_CF_COOKIES = data.get("cookies", {})
+                CACHED_CF_UA = data.get("user_agent")
+
+        if CACHED_CF_COOKIES:
+            for k, v in CACHED_CF_COOKIES.items():
+                session.cookies.set(k, v)
+            if CACHED_CF_UA:
+                session.headers["User-Agent"] = CACHED_CF_UA
+            print(f"  [✓] Loaded {len(CACHED_CF_COOKIES)} cached Cloudflare session cookies.")
+            return True
+    except Exception as e:
+        print(f"  [!] Note: Failed to load cached CF session: {e}")
+    return False
+
+def save_cached_cf_session(cookies: Dict[str, str], user_agent: Optional[str]) -> None:
+    """Saves valid Cloudflare session cookies and User-Agent locally and to Supabase."""
+    global CACHED_CF_COOKIES, CACHED_CF_UA
+    CACHED_CF_COOKIES = cookies
+    if user_agent:
+        CACHED_CF_UA = user_agent
+    data = {
+        "cookies": cookies,
+        "user_agent": CACHED_CF_UA,
+        "saved_at": time.time()
+    }
+    try:
+        with open(COOKIE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+    try:
+        from scraper.db import set_scraper_checkpoint
+        set_scraper_checkpoint("supjav_cf_session", data)
+    except Exception:
+        pass
 
 def create_session(impersonate: str = "chrome124") -> requests.Session:
-    """Creates a clean TLS-impersonated browser session with authentic, untouched headers."""
-    return requests.Session(impersonate=impersonate)
+    """Creates a clean TLS-impersonated browser session with cached CF cookies applied."""
+    s = requests.Session(impersonate=impersonate)
+    load_cached_cf_session(s)
+    return s
 
 def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -> Optional[str]:
     """
     Bypasses Cloudflare Turnstile/Interstitial using Scrapling's StealthyFetcher.
-    Solves challenges automatically and synchronizes cookies back to the curl_cffi session.
+    Solves challenges automatically, extracts raw HTML, and synchronizes/caches cookies.
     """
     try:
         from scrapling.fetchers import StealthyFetcher
@@ -107,17 +160,34 @@ def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -
             timeout=45000
         )
         if response and response.status == 200:
-            html = response.text
-            # Sync cookies (including cf_clearance) back to curl_cffi session if provided
-            if session is not None and hasattr(response, "cookies") and response.cookies:
-                try:
-                    for k, v in response.cookies.items():
-                        session.cookies.set(k, v)
-                    print(f"    [✓] Scrapling cleared Cloudflare challenge! Cookies synchronized.")
-                except Exception as ce:
-                    print(f"    [!] Cookie sync note: {ce}")
-            else:
-                print(f"    [✓] Scrapling cleared Cloudflare challenge! (Status 200)")
+            # 1. Extract raw HTML string from bytes body
+            raw_body = response.body
+            encoding = getattr(response, "encoding", "utf-8") or "utf-8"
+            html = raw_body.decode(encoding, errors="ignore")
+
+            # 2. Extract cookies (cookies is a tuple of dicts)
+            extracted_cookies: Dict[str, str] = {}
+            if hasattr(response, "cookies") and response.cookies:
+                for c in response.cookies:
+                    if isinstance(c, dict) and "name" in c and "value" in c:
+                        extracted_cookies[c["name"]] = c["value"]
+
+            # 3. Extract exact User-Agent used by stealth browser
+            ua = None
+            if hasattr(response, "request_headers") and response.request_headers:
+                ua = response.request_headers.get("user-agent") or response.request_headers.get("User-Agent")
+
+            # 4. Sync into session & cache for all subsequent requests
+            if session is not None and extracted_cookies:
+                for k, v in extracted_cookies.items():
+                    session.cookies.set(k, v)
+                if ua:
+                    session.headers["User-Agent"] = ua
+                print(f"    [✓] Scrapling cleared Cloudflare! Cached {len(extracted_cookies)} cookies (including cf_clearance).")
+
+            if extracted_cookies:
+                save_cached_cf_session(extracted_cookies, ua)
+
             return html
         else:
             status = response.status if response else "None"
@@ -133,7 +203,7 @@ def warm_up_session(session: requests.Session) -> bool:
         r = session.get(f"{BASE_URL}/", timeout=12)
         if r.status_code == 200 and "Just a moment..." not in r.text and "challenge-platform" not in r.text:
             return True
-        print(f"[*] SupJav homepage Cloudflare challenge detected. Engaging Scrapling warm-up...")
+        print(f"[*] SupJav homepage Cloudflare challenge detected (HTTP {r.status_code}). Engaging Scrapling...")
         html = fetch_with_scrapling(f"{BASE_URL}/", session=session)
         return bool(html and "Just a moment..." not in html)
     except Exception as e:

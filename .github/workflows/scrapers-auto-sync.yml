@@ -87,7 +87,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add scraper/categories/japanese/checkpoint.json scraper/categories/japanese/known_post_ids.json || true
+          git add scraper/categories/japanese/checkpoint.json scraper/categories/japanese/known_post_ids.json scraper/categories/japanese/cf_session.json || true
           if ! git diff --staged --quiet; then
             echo "[*] Checkpoint progress detected. Committing updates..."
             git commit -m "chore: persist scraper catalog progress [skip ci]"

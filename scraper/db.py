@@ -199,6 +199,62 @@ def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = N
     return response.data
 
 
+# ─── Isolated OnlyFans Database Functions ───────────────────────────────────
+
+def upsert_onlyfans_video(polished_record: Dict[str, Any]) -> Any:
+    """Inserts or updates a single video strictly in scraper.onlyfans_videos."""
+    return upsert_onlyfans_videos_batch([polished_record])
+
+def upsert_onlyfans_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """
+    Batch inserts or updates video records strictly in scraper.onlyfans_videos.
+    Zero cross-contamination: never touches or falls back to scraper.videos.
+    """
+    if not polished_records:
+        return {"success": True, "count": 0}
+
+    # Isolated RPC strictly targeting scraper.onlyfans_videos
+    res = call_supabase_rpc("scraper_upsert_onlyfans_videos", {"items": polished_records}, retries=retries)
+    if res is not None:
+        return res
+
+    # Fallback to direct supabase-py client strictly on scraper_upsert_onlyfans_videos
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_onlyfans_videos", {"items": polished_records}).execute()
+            return response.data
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase OnlyFans upsert batch failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(wait_time)
+
+def get_onlyfans_videos(source_site: Optional[str] = "internetchicks", tag: Optional[str] = None, category: Optional[str] = "onlyfans", search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Retrieves stored videos strictly from scraper.onlyfans_videos table using RPC bridge.
+    """
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset
+    }
+    try:
+        response = supabase.rpc("scraper_get_onlyfans_videos", params).execute()
+        return response.data or []
+    except Exception as e:
+        print(f"[!] Failed to fetch onlyfans videos: {e}")
+        return []
+
+
+
 
 # ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
 

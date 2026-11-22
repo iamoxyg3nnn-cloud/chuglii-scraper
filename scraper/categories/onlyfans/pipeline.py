@@ -177,7 +177,20 @@ def run_site_crawl(
         batch_to_upsert = []
         for raw in enriched:
             try:
+                # Discard non-video entries (e.g. photo sets or galleries without video streams)
+                raw_servers = raw.get("servers") or []
+                raw_stream = raw.get("full_video_url")
+                if not raw_stream and not raw_servers:
+                    known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
+                    print(f"      [SKIP NON-VIDEO] '{raw.get('title')}' has no video stream (photo set). Skipped.")
+                    continue
+
                 polished = polish_onlyfans_record(raw)
+                if not polished.get("full_video_url") and not (polished.get("raw_payload", {}).get("servers") or polished.get("servers")):
+                    known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
+                    print(f"      [SKIP NON-VIDEO] '{polished.get('title')}' has no valid stream after polish. Skipped.")
+                    continue
+
                 processed_record, is_new = deduplicator.process_candidate(polished)
                 batch_to_upsert.append(processed_record)
 

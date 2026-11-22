@@ -85,8 +85,6 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     mp4_url = None
     if video_sources:
         mp4_url = video_sources[0].attrib.get("src")
-        if mp4_url and ".influencersgonewild.net" in mp4_url:
-            mp4_url = re.sub(r"cdn\d+\.influencersgonewild\.net", "cdn04.influencersgonewild.net", mp4_url)
 
     servers = []
     if mp4_url:

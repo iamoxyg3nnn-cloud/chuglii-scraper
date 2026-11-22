@@ -33,6 +33,39 @@ BASE_URL = "https://mmsvibex.life"
 SOURCE_NAME = "mmsvibex"
 PARENT_CATEGORY = "viral-mms"
 KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
+CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
+
+def load_checkpoint() -> Dict[str, Any]:
+    """Loads Viral MMS crawler checkpoint state: Supabase-first with local fallback."""
+    try:
+        from scraper.db import get_scraper_checkpoint
+        sb_cp = get_scraper_checkpoint("viral-mms")
+        if sb_cp and isinstance(sb_cp, dict) and "current_page" in sb_cp:
+            return sb_cp
+    except Exception:
+        pass
+
+    if CHECKPOINT_FILE.exists():
+        try:
+            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            return data
+        except Exception:
+            pass
+    return {"current_page": 221, "max_pages": 221, "completed": True, "total_ingested": 9236}
+
+def save_checkpoint(data: Dict[str, Any]) -> None:
+    """Saves Viral MMS crawler checkpoint state to Supabase and mirrors to local file."""
+    try:
+        from scraper.db import set_scraper_checkpoint
+        set_scraper_checkpoint("viral-mms", data)
+    except Exception as e:
+        print(f"[!] Note: Supabase Viral MMS checkpoint sync bypassed ({e}).")
+
+    try:
+        data["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[!] Failed to write local checkpoint: {e}")
 
 def load_known_ids() -> Set[str]:
     """Loads cached post IDs: primary Supabase, fallback local JSON."""

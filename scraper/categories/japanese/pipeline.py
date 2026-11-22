@@ -17,11 +17,25 @@ import re
 import json
 import time
 import argparse
+import threading
+import atexit
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from curl_cffi import requests
+
+def cleanup_orphan_browsers() -> None:
+    """Terminates any leftover orphan Chrome or Patchright browser processes."""
+    if sys.platform != "win32":
+        try:
+            import subprocess
+            subprocess.run(["pkill", "-f", "chrome"], capture_output=True, timeout=5)
+            subprocess.run(["pkill", "-f", "patchright"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+atexit.register(cleanup_orphan_browsers)
 
 CURRENT_DIR = Path(__file__).resolve().parent
 CATEGORIES_DIR = CURRENT_DIR.parent
@@ -150,11 +164,54 @@ def create_session(impersonate: str = "chrome124") -> requests.Session:
     load_cached_cf_session(s)
     return s
 
+# Cloudflare Concurrency Lock & Rate Limit Protection
+CF_SOLVE_LOCK = threading.Lock()
+CF_RATE_LIMITED_UNTIL: float = 0.0
+LAST_CF_SOLVE_TIME: float = 0.0
+
+def ensure_valid_cf_session(session: requests.Session) -> bool:
+    """
+    Thread-safe Cloudflare session refresher.
+    Solves Turnstile ONCE on the homepage and synchronizes cookies across all worker sessions.
+    Prevents parallel browser launches and 429 rate limit blocks.
+    """
+    global CF_RATE_LIMITED_UNTIL, LAST_CF_SOLVE_TIME, CACHED_CF_COOKIES, CACHED_CF_UA
+    now = time.time()
+    if now < CF_RATE_LIMITED_UNTIL:
+        return False
+
+    with CF_SOLVE_LOCK:
+        now = time.time()
+        # If another worker thread solved CF within the last 45s, reuse the fresh session
+        if now - LAST_CF_SOLVE_TIME < 45.0 and CACHED_CF_COOKIES:
+            for k, v in CACHED_CF_COOKIES.items():
+                session.cookies.set(k, v)
+            if CACHED_CF_UA:
+                session.headers["User-Agent"] = CACHED_CF_UA
+            return True
+
+        if now < CF_RATE_LIMITED_UNTIL:
+            return False
+
+        print("    [*] Refreshing SupJav Cloudflare session via Scrapling (single thread)...")
+        html = fetch_with_scrapling(f"{BASE_URL}/", session=session)
+        if html and "Just a moment..." not in html:
+            LAST_CF_SOLVE_TIME = time.time()
+            return True
+        return False
+
 def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -> Optional[str]:
     """
     Bypasses Cloudflare Turnstile/Interstitial using Scrapling's StealthyFetcher.
     Solves challenges automatically, extracts raw HTML, and synchronizes/caches cookies.
+    Protected by rate-limit cooldown and automatic cleanup.
     """
+    global CF_RATE_LIMITED_UNTIL, LAST_CF_SOLVE_TIME
+
+    if time.time() < CF_RATE_LIMITED_UNTIL:
+        print(f"    [!] Skipping Scrapling: Rate limit cooldown active ({int(CF_RATE_LIMITED_UNTIL - time.time())}s remaining).")
+        return None
+
     try:
         from scrapling.fetchers import StealthyFetcher
         print(f"    [*] Engaging Scrapling StealthyFetcher with Turnstile auto-solver for {url}...")
@@ -165,6 +222,11 @@ def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -
             network_idle=True,
             timeout=45000
         )
+        if response and response.status == 429:
+            CF_RATE_LIMITED_UNTIL = time.time() + 60.0
+            print("    [!] Scrapling received HTTP 429 (Rate Limit). Cooling down for 60s.")
+            return None
+
         if response and response.status == 200:
             # 1. Extract raw HTML string from bytes body
             raw_body = response.body
@@ -193,6 +255,7 @@ def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -
 
             if extracted_cookies:
                 save_cached_cf_session(extracted_cookies, ua)
+                LAST_CF_SOLVE_TIME = time.time()
 
             return html
         else:
@@ -353,29 +416,35 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
     """
     Scrapes detail page to extract ONLY working server mirrors (VOE HD, VidSpeed, LuluStream).
     Skips unworkable hosts (Streamtape, EarnVids) before making any network calls.
+    Uses centralized session refresh if challenged, preventing browser stampedes.
     """
     try:
-        kwargs = {"headers": {"Referer": "https://supjav.com/"}, "timeout": 12}
+        kwargs = {"headers": {"Referer": "https://supjav.com/"}, "timeout": 15}
         if proxy:
             kwargs["proxies"] = {"http": proxy, "https": proxy}
         res = session.get(detail_url, **kwargs)
-        if res.status_code != 200 or len(res.text) <= 5000 or "Just a moment..." in res.text:
-            scrapling_html = fetch_with_scrapling(detail_url, session=session)
-            if scrapling_html and len(scrapling_html) > 5000 and "Just a moment..." not in scrapling_html:
-                res_text = scrapling_html
-            elif proxy:
-                GLOBAL_PROXY_POOL.report_failure(proxy)
-                proxy = os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY")
-                if proxy:
-                    kwargs["proxies"] = {"http": proxy, "https": proxy}
-                    res = session.get(detail_url, **kwargs)
-                    res_text = res.text
-                else:
-                    return {"servers": []}
-            else:
+
+        is_cf_block = (
+            res.status_code in (403, 503) or
+            "Just a moment..." in res.text or
+            "challenge-platform" in res.text
+        )
+
+        if is_cf_block:
+            refreshed = ensure_valid_cf_session(session)
+            if refreshed:
+                res = session.get(detail_url, **kwargs)
+                is_cf_block = (
+                    res.status_code in (403, 503) or
+                    "Just a moment..." in res.text
+                )
+            if is_cf_block:
                 return {"servers": []}
-        else:
-            res_text = res.text
+
+        if res.status_code != 200 or len(res.text) <= 3000:
+            return {"servers": []}
+
+        res_text = res.text
 
         if "Just a moment..." in res_text:
             return {"servers": []}

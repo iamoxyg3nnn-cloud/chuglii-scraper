@@ -1,12 +1,12 @@
 {
   "stats": {
-    "last_sync": "2026-11-21T22:30:28Z",
+    "last_sync": "2026-11-22T03:41:04Z",
     "total_ingested": 79
   },
   "viral-mms": {
     "max_pages": 150,
-    "current_page": 6,
-    "total_ingested": 344
+    "current_page": 10,
+    "total_ingested": 688
   },
   "categories": {
     "amateur": {

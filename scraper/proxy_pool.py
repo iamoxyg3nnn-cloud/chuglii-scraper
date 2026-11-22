@@ -3,6 +3,7 @@ Automated Live Free Proxy Harvester & Cloudflare Validator
 Scrapes, validates, and rotates live public proxies on-the-fly to bypass datacenter IP restrictions.
 """
 
+import os
 import time
 import json
 import random
@@ -104,9 +105,15 @@ class AutoProxyPool:
         return len(self.working_proxies)
 
     def get_proxy(self) -> Optional[str]:
-        """Gets a working proxy, refreshing the pool automatically if depleted."""
-        if not self.working_proxies:
-            self.refresh_pool()
+        """Gets a working proxy, prioritizing environment variable if provided."""
+        env_proxy = os.getenv("PROXY_URL") or os.getenv("RESIDENTIAL_PROXY") or os.getenv("HTTPS_PROXY")
+        if env_proxy:
+            return env_proxy
+        if self.working_proxies:
+            return random.choice(self.working_proxies)
+        # Limit candidate probes to prevent stalling if free proxies are exhausted
+        if not self.working_proxies and len(self.failed_proxies) < 15:
+            self.refresh_pool(max_probes=40, workers=20)
         if self.working_proxies:
             return random.choice(self.working_proxies)
         return None

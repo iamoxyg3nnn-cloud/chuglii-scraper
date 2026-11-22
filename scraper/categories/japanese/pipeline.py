@@ -91,13 +91,55 @@ def create_session(impersonate: str = "chrome124") -> requests.Session:
     """Creates a clean TLS-impersonated browser session with authentic, untouched headers."""
     return requests.Session(impersonate=impersonate)
 
+def fetch_with_scrapling(url: str, session: Optional[requests.Session] = None) -> Optional[str]:
+    """
+    Bypasses Cloudflare Turnstile/Interstitial using Scrapling's StealthyFetcher.
+    Solves challenges automatically and synchronizes cookies back to the curl_cffi session.
+    """
+    try:
+        from scrapling.fetchers import StealthyFetcher
+        print(f"    [*] Engaging Scrapling StealthyFetcher with Turnstile auto-solver for {url}...")
+        response = StealthyFetcher.fetch(
+            url,
+            solve_cloudflare=True,
+            headless=True,
+            network_idle=True,
+            timeout=45000
+        )
+        if response and response.status == 200:
+            html = response.text
+            # Sync cookies (including cf_clearance) back to curl_cffi session if provided
+            if session is not None and hasattr(response, "cookies") and response.cookies:
+                try:
+                    for k, v in response.cookies.items():
+                        session.cookies.set(k, v)
+                    print(f"    [✓] Scrapling cleared Cloudflare challenge! Cookies synchronized.")
+                except Exception as ce:
+                    print(f"    [!] Cookie sync note: {ce}")
+            else:
+                print(f"    [✓] Scrapling cleared Cloudflare challenge! (Status 200)")
+            return html
+        else:
+            status = response.status if response else "None"
+            print(f"    [!] Scrapling fetch returned status: {status}")
+            return None
+    except Exception as e:
+        print(f"    [!] Scrapling StealthyFetcher error: {e}")
+        return None
+
 def warm_up_session(session: requests.Session) -> bool:
-    """Establishes natural browser navigation by hitting homepage first to warm up cookies."""
+    """Establishes natural browser navigation by hitting homepage first to warm up cookies, clearing Cloudflare if challenged."""
     try:
         r = session.get(f"{BASE_URL}/", timeout=12)
-        return r.status_code == 200
-    except Exception:
-        return False
+        if r.status_code == 200 and "Just a moment..." not in r.text and "challenge-platform" not in r.text:
+            return True
+        print(f"[*] SupJav homepage Cloudflare challenge detected. Engaging Scrapling warm-up...")
+        html = fetch_with_scrapling(f"{BASE_URL}/", session=session)
+        return bool(html and "Just a moment..." not in html)
+    except Exception as e:
+        print(f"[*] Homepage warm-up exception: {e}. Attempting Scrapling...")
+        html = fetch_with_scrapling(f"{BASE_URL}/", session=session)
+        return bool(html and "Just a moment..." not in html)
 
 # ─── Checkpoint & Known IDs State Management ─────────────────────────────────
 
@@ -242,16 +284,27 @@ def scrape_detail_page(session: requests.Session, detail_url: str, proxy: Option
             kwargs["proxies"] = {"http": proxy, "https": proxy}
         res = session.get(detail_url, **kwargs)
         if res.status_code != 200 or len(res.text) <= 5000 or "Just a moment..." in res.text:
-            if proxy:
+            scrapling_html = fetch_with_scrapling(detail_url, session=session)
+            if scrapling_html and len(scrapling_html) > 5000 and "Just a moment..." not in scrapling_html:
+                res_text = scrapling_html
+            elif proxy:
                 GLOBAL_PROXY_POOL.report_failure(proxy)
-            proxy = GLOBAL_PROXY_POOL.get_proxy()
-            if proxy:
-                kwargs["proxies"] = {"http": proxy, "https": proxy}
-                res = session.get(detail_url, **kwargs)
-        if res.status_code != 200 or "Just a moment..." in res.text:
+                proxy = GLOBAL_PROXY_POOL.get_proxy()
+                if proxy:
+                    kwargs["proxies"] = {"http": proxy, "https": proxy}
+                    res = session.get(detail_url, **kwargs)
+                    res_text = res.text
+                else:
+                    return {"servers": []}
+            else:
+                return {"servers": []}
+        else:
+            res_text = res.text
+
+        if "Just a moment..." in res_text:
             return {"servers": []}
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        soup = BeautifulSoup(res_text, "html.parser")
         servers = []
         cd_servers = soup.select(".cd-server")
 
@@ -364,7 +417,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
     cards = []
     current_proxy = None
 
-    for attempt in range(4):
+    for attempt in range(3):
         try:
             kwargs = {"timeout": 15}
             if current_proxy:
@@ -387,25 +440,42 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                 title_m = re.search(r'<title>(.*?)</title>', res.text, re.IGNORECASE)
                 title_str = title_m.group(1).strip() if title_m else f"HTTP {res.status_code}"
                 cf_ray = res.headers.get("cf-ray", "none")
+                print(f"    [!] Cloudflare challenge detected ({res.status_code}: {title_str} | CF-Ray: {cf_ray})")
 
+                # 1. Primary resolution: Auto-solve Turnstile challenge with Scrapling
+                scrapling_html = fetch_with_scrapling(url, session=session)
+                if scrapling_html and "Just a moment..." not in scrapling_html:
+                    soup = BeautifulSoup(scrapling_html, "html.parser")
+                    cards = soup.select(".post")
+                    print(f"    Found {len(cards)} video cards (via Scrapling bypass)")
+                    break
+
+                # 2. Secondary fallback: Check configured proxies
                 if current_proxy:
                     GLOBAL_PROXY_POOL.report_failure(current_proxy)
-
                 current_proxy = GLOBAL_PROXY_POOL.get_proxy()
-                print(f"    [!] Cloudflare challenge ({res.status_code}: {title_str} | CF-Ray: {cf_ray}). Engaging auto-proxy: {current_proxy}...")
-                session = create_session(impersonate="chrome124")
-                time.sleep(1.0)
+                if current_proxy:
+                    print(f"    [!] Retrying with configured proxy: {current_proxy}...")
+                    session = create_session(impersonate="chrome124")
+                time.sleep(1.5)
             else:
                 print(f"    [!] HTTP error {res.status_code} on {url}")
                 return None
         except Exception as e:
+            print(f"    [!] Connection glitch ({e}). Engaging Scrapling...")
+            scrapling_html = fetch_with_scrapling(url, session=session)
+            if scrapling_html and "Just a moment..." not in scrapling_html:
+                soup = BeautifulSoup(scrapling_html, "html.parser")
+                cards = soup.select(".post")
+                print(f"    Found {len(cards)} video cards (via Scrapling bypass)")
+                break
+
             if current_proxy:
                 GLOBAL_PROXY_POOL.report_failure(current_proxy)
             current_proxy = GLOBAL_PROXY_POOL.get_proxy()
-            print(f"    [!] Connection glitch ({e}), switching to proxy: {current_proxy}...")
             time.sleep(1.5)
     else:
-        print(f"    [!] Could not bypass Cloudflare protection for {url} after 4 attempts.")
+        print(f"    [!] Could not bypass Cloudflare protection for {url} after retries.")
         return None
 
     items = []

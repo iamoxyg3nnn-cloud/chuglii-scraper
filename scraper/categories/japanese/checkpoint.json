@@ -1,18 +1,18 @@
 {
   "stats": {
-    "last_sync": "2026-11-22T06:03:46Z",
+    "last_sync": "2026-11-22T06:58:52Z",
     "total_ingested": 79
   },
   "viral-mms": {
     "max_pages": 150,
-    "current_page": 39,
-    "total_ingested": 3182
+    "current_page": 57,
+    "total_ingested": 4730
   },
   "categories": {
     "amateur": {
       "completed": false,
       "max_pages": 1655,
-      "current_page": 29
+      "current_page": 45
     },
     "popular": {
       "completed": true,
@@ -22,17 +22,17 @@
     "censored-jav": {
       "completed": false,
       "max_pages": 6555,
-      "current_page": 28
+      "current_page": 44
     },
     "uncensored-jav": {
       "completed": false,
       "max_pages": 1958,
-      "current_page": 29
+      "current_page": 45
     },
     "reducing-mosaic": {
       "completed": false,
       "max_pages": 4692,
-      "current_page": 27
+      "current_page": 42
     }
   }
 }

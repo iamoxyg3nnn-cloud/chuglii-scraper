@@ -414,17 +414,20 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
 def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
     """Runs each OnlyFans source independently into its own table."""
     log("\n" + "=" * 65)
-    log(f"  [FEED 4/4] OnlyFans Leaks Multi-Site Fleet | 1080p Stream Promotion")
+    log(f"  [FEED 4/4] OnlyFans Leaks Multi-Site Fleet | Per-source isolated")
     log("=" * 65)
     try:
         from scraper.categories.onlyfans.pipeline import (
             run_site_crawl,
             load_checkpoints,
             save_checkpoints,
+            load_known_ids as load_of_known_ids,
+            save_known_ids as save_of_known_ids,
             SOURCES as OF_SOURCES
         )
 
         checkpoints = load_checkpoints()
+        known_ids = load_of_known_ids()
         total_new = 0
 
         sites = ["internetchicks", "influencersgonewild", "sheeshfans", "pimpbunny"]
@@ -433,8 +436,8 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
                 continue
 
             site_state = checkpoints.get(site_key, {"current_page": 1, "max_pages": 200})
-            curr_cursor = site_state.get("current_page", 1)
-            max_pages = site_state.get("max_pages", 200)
+            curr_cursor = int(site_state.get("current_page", 1) or 1)
+            max_pages = int(site_state.get("max_pages", 200) or 200)
 
             # 1. Head check (Page 1) when scheduled
             if check_head:
@@ -442,10 +445,12 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
                     site_key=site_key,
                     start_page=1,
                     max_pages=1,
+                    known_ids=known_ids,
                     dry_run=False,
-                    jitter=0.5
+                    jitter=0.5,
+                    new_only=True,
                 )
-                total_new += h_stats.get("items_new", 0)
+                total_new += int(h_stats.get("items_new", 0) or 0)
 
             # 2. Historical backfill cursor
             if curr_cursor <= max_pages:
@@ -453,19 +458,23 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
                     site_key=site_key,
                     start_page=curr_cursor,
                     max_pages=pages_per_site,
+                    known_ids=known_ids,
                     dry_run=False,
-                    jitter=0.8
+                    jitter=0.8,
                 )
-                total_new += c_stats.get("items_new", 0)
+                total_new += int(c_stats.get("items_new", 0) or 0)
                 # Do not advance past empty/blocked pages or a failed upsert.
-                # Those pages must be retried instead of being skipped forever.
                 if not c_stats.get("upsert_failed"):
-                    site_state["current_page"] = curr_cursor + c_stats.get("pages_crawled", 0)
+                    site_state["current_page"] = curr_cursor + int(c_stats.get("pages_crawled", 0) or 0)
+                detected_max = c_stats.get("detected_max_pages")
+                if isinstance(detected_max, int) and detected_max > 0:
+                    site_state["max_pages"] = max(int(site_state.get("max_pages", 0) or 0), detected_max)
 
             checkpoints[site_key] = site_state
+            save_of_known_ids(known_ids)
+            save_checkpoints(checkpoints)
 
-        save_checkpoints(checkpoints)
-        log(f"\n  [✓] OnlyFans per-source sync complete. Records appended: {total_new}")
+        log(f"\n  [OK] OnlyFans per-source sync complete. Records appended: {total_new}")
         return total_new
     except Exception as e:
         log(f"  [!] OnlyFans sync error: {e}")

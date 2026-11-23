@@ -1,8 +1,7 @@
 """
 Polishing and Data Normalization Module for OnlyFans Videos
-Source: Internet Chicks (https://internetchicks.com)
 Parent Category: 'onlyfans'
-Stores into Supabase isolated schema: 'scraper.onlyfans_videos' / 'scraper.videos'
+Records are persisted through the selected source's isolated table and route.
 """
 
 import re
@@ -67,14 +66,29 @@ clean_image_url = clean_thumbnail_url
 
 
 def parse_date_to_iso(date_str: Optional[str]) -> Optional[str]:
-    """Parses date like 'November 22, 2026' into ISO 8601 UTC string."""
+    """Parses IGW/IC/SheeshFans/PimpBunny dates into ISO 8601 UTC string."""
     if not date_str:
-        return datetime.now(timezone.utc).isoformat()
+        return None
+    raw = str(date_str).strip()
+    if not raw:
+        return None
+    # ISO first
     try:
-        dt = datetime.strptime(date_str.strip(), "%B %d, %Y")
-        return dt.replace(tzinfo=timezone.utc).isoformat()
+        iso = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
     except Exception:
-        return datetime.now(timezone.utc).isoformat()
+        pass
+    for fmt in ("%B %d, %Y, %H:%M", "%B %d, %Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.replace(tzinfo=timezone.utc).isoformat()
+        except Exception:
+            continue
+    # Fallback: keep unknown instead of fabricating "now"
+    return None
 
 def prioritize_servers(servers: List[Dict[str, Any]]) -> tuple[Optional[str], List[Dict[str, Any]], str, int]:
     """
@@ -132,11 +146,24 @@ def prioritize_servers(servers: List[Dict[str, Any]]) -> tuple[Optional[str], Li
     primary = best.get("embed_url")
     best_score = best.get("quality_score", 720)
     
-    label = (
-        "4K UHD" if best_score >= 2000 else
-        "1080p Full HD" if best_score >= 1000 else
-        "720p HD" if best_score >= 700 else "480p SD"
-    )
+    declared_label = str(best.get("quality_label") or "").strip()
+    # Normalize bad URL labels; keep semantic labels like Auto.
+    if declared_label.lower() in {"auto", "original / unspecified"}:
+        label = declared_label
+    elif re.match(r"^https?://", declared_label, re.I):
+        m = re.search(r"(?<!\d)(2160|1440|1080|720|480|360)p?(?!\d)", declared_label, re.I)
+        label = f"{m.group(1)}p" if m else "Original"
+    elif re.search(r"\b(2160|1440|1080|720|480|360)p?\b", declared_label, re.I):
+        m = re.search(r"\b(2160|1440|1080|720|480|360)p?\b", declared_label, re.I)
+        label = f"{m.group(1)}p" if m else declared_label
+    else:
+        label = (
+            "4K UHD" if best_score >= 2000 else
+            "1440p QHD" if best_score >= 1350 else
+            "1080p Full HD" if best_score >= 1000 else
+            "720p HD" if best_score >= 700 else
+            "480p SD" if best_score >= 400 else "Original"
+        )
 
     return primary, sorted_servers, label, best_score
 
@@ -178,24 +205,36 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     # Servers & Primary Embed (strictly prioritized by quality score)
     raw_servers = raw_item.get("servers") or []
     primary_embed, sorted_servers, quality_label, quality_score = prioritize_servers(raw_servers)
+    trailer_preview_url = raw_item.get("trailer_preview_url") or raw_item.get("preview_url")
+    if not trailer_preview_url and sorted_servers:
+        best_server = sorted_servers[0]
+        if best_server.get("type") in {"direct_mp4", "direct_webm"}:
+            # Fall back to the chosen direct rendition only when no dedicated
+            # preview clip exists. The frontend loads it only after hover.
+            trailer_preview_url = primary_embed
 
     # Published At
     date_str = raw_item.get("date") or raw_item.get("published_at")
     published_at = parse_date_to_iso(date_str)
 
-    # Tags
-    raw_tags = raw_item.get("tags") or []
-    tags_set = set()
-    for t in raw_tags:
-        clean_t = t.strip().lower()
-        if clean_t and len(clean_t) > 1 and clean_t not in ["internetchicks", "video", "videos"]:
-            tags_set.add(clean_t)
-    tags_set.add("onlyfans")
-    tags_set.add("leaked")
-    for a in actors:
-        tags_set.add(a.lower())
-
     source_site = raw_item.get("source_site") or "internetchicks"
+
+    # Tags - dedupe, preserve useful model/content tags.
+    raw_tags = raw_item.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    seen_tags = set()
+    tags = []
+    for t in list(raw_tags) + ["onlyfans", "leaked"] + [a.lower() for a in actors]:
+        clean_t = re.sub(r"\s+", " ", str(t or "").strip().lower())
+        if not clean_t or len(clean_t) < 2 or len(clean_t) > 80:
+            continue
+        if clean_t in {"internetchicks", "video", "videos", "photo", "photos"}:
+            continue
+        if clean_t in seen_tags:
+            continue
+        seen_tags.add(clean_t)
+        tags.append(clean_t)
     return {
         "source_site": source_site,
         "source_post_id": post_id,
@@ -204,19 +243,19 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
         "detail_url": raw_item.get("url") or raw_item.get("detail_url") or "",
         "full_video_url": primary_embed,
         "video_mime_type": raw_item.get("video_mime_type") or "embed/iframe",
-        "trailer_preview_url": primary_embed,
+        "trailer_preview_url": trailer_preview_url,
         "thumbnail_url": valid_thumb,
         "clean_thumbnail_url": valid_thumb,
         "quality_label": quality_label,
         "quality_score": quality_score,
-        "duration_seconds": raw_item.get("duration_seconds", 600),
-        "duration_formatted": raw_item.get("duration_formatted", "10:00"),
+        "duration_seconds": int(raw_item.get("duration_seconds") or 0) or None,
+        "duration_formatted": (str(raw_item.get("duration_formatted") or "").strip() or None),
         "views_count": int(raw_item.get("views_count", 0)),
         "views_raw": str(raw_item.get("views_raw", "0")),
         "rating_score": float(raw_item.get("rating_score", 95.0)),
         "rating_raw": str(raw_item.get("rating_raw", "95%")),
         "categories": ["onlyfans"],
-        "tags": sorted(list(tags_set)),
+        "tags": tags,
         "actors": actors,
         "status": "active",
         "published_at": published_at,
@@ -226,6 +265,13 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
             "models": actors,
             "servers": sorted_servers,
             "mirrors": sorted_servers,
-            "gallery_url": raw_item.get("gallery_url")
+            "preview_url": trailer_preview_url,
+            "gallery_url": raw_item.get("gallery_url"),
+            "screenshots": [
+                u for u in dict.fromkeys([
+                    str(x).strip() for x in (raw_item.get("screenshots") or raw_item.get("raw_payload", {}).get("screenshots") or [])
+                    if isinstance(x, str) and str(x).strip() and not str(x).strip().startswith("data:")
+                ])
+            ][:40],
         }
     }

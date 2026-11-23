@@ -201,6 +201,13 @@ def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = N
 
 # ─── Isolated OnlyFans Database Functions ───────────────────────────────────
 
+ONLYFANS_SOURCE_TABLE_RPC = {
+    "internetchicks": "scraper_insert_onlyfans_internetchicks_videos",
+    "influencersgonewild": "scraper_insert_onlyfans_influencersgonewild_videos",
+    "sheeshfans": "scraper_insert_onlyfans_sheeshfans_videos",
+    "pimpbunny": "scraper_insert_onlyfans_pimpbunny_videos",
+}
+
 def upsert_onlyfans_video(polished_record: Dict[str, Any]) -> Any:
     """Inserts or updates a single video strictly in scraper.onlyfans_videos."""
     return upsert_onlyfans_videos_batch([polished_record])
@@ -231,6 +238,67 @@ def upsert_onlyfans_videos_batch(polished_records: List[Dict[str, Any]], retries
             wait_time = (attempt + 1) * 3
             print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
             time.sleep(wait_time)
+
+
+def _onlyfans_source_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "source_site", "source_post_id", "title", "slug", "detail_url", "full_video_url",
+        "video_mime_type", "trailer_preview_url", "thumbnail_url", "clean_thumbnail_url",
+        "quality_label", "quality_score", "duration_seconds", "duration_formatted",
+        "views_count", "views_raw", "rating_score", "rating_raw", "categories", "tags",
+        "actors", "status", "published_at", "raw_payload",
+    }
+    out = {k: v for k, v in record.items() if k in allowed}
+    out.setdefault("source_site", record.get("source_site"))
+    out.setdefault("status", "active")
+    out.setdefault("categories", ["onlyfans"])
+    out.setdefault("tags", [])
+    out.setdefault("actors", [])
+    out.setdefault("raw_payload", {})
+    return out
+
+
+def sync_onlyfans_source_tables_batch(polished_records: List[Dict[str, Any]], retries: int = 3) -> Dict[str, Any]:
+    """Best-effort sync into isolated per-source OnlyFans tables.
+
+    Deduplicates by source_post_id per source table before syncing to prevent
+    duplicate rows from repeated crawls/dirty legacy rows.
+    """
+    if not polished_records:
+        return {"success": True, "synced": 0}
+
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for rec in polished_records:
+        site = str(rec.get("source_site") or "").strip().lower()
+        rpc_name = ONLYFANS_SOURCE_TABLE_RPC.get(site)
+        if not rpc_name:
+            continue
+        clean = _onlyfans_source_record(rec)
+        pid = str(clean.get("source_post_id") or "").strip()
+        if not pid:
+            continue
+        # Last write wins within batch; canonical/cleaned records should come last.
+        grouped.setdefault(rpc_name, {})[pid] = clean
+
+    synced = 0
+    errors: List[str] = []
+    for rpc_name, by_pid in grouped.items():
+        items = list(by_pid.values())
+        for i in range(0, len(items), 50):
+            chunk = items[i:i + 50]
+            res = call_supabase_rpc(rpc_name, {"items": chunk}, retries=retries)
+            if res is None:
+                try:
+                    supabase = get_supabase_client()
+                    res = supabase.rpc(rpc_name, {"items": chunk}).execute().data
+                except Exception as e:
+                    errors.append(f"{rpc_name}: {e}")
+                    continue
+            if isinstance(res, dict) and res.get("success") is False:
+                errors.append(f"{rpc_name}: {res.get('error')}")
+            else:
+                synced += int(res.get("inserted") or res.get("count") or len(chunk)) if isinstance(res, dict) else len(chunk)
+    return {"success": not errors, "synced": synced, "errors": errors, "deduped_input": len(polished_records)}
 
 def get_onlyfans_videos(source_site: Optional[str] = "internetchicks", tag: Optional[str] = None, category: Optional[str] = "onlyfans", search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
     """

@@ -1,21 +1,142 @@
-"""
+﻿"""
 Source Scraper for InfluencersGoneWild (https://influencersgonewild.com)
 """
 import re
+import time
 from typing import List, Dict, Any, Optional
-from scrapling import Fetcher
+from urllib.parse import urljoin, urlsplit
+
+try:
+    from scrapling import Fetcher  # type: ignore
+except Exception:
+    Fetcher = None
+    import requests
+    from bs4 import BeautifulSoup
+
+    class _Node:
+        def __init__(self, el):
+            self._el = el
+            self.attrib = dict(el.attrs or {})
+            class _T:
+                def __init__(self,t): self._t=t
+                def clean(self): return re.sub(r"\s+", " ", self._t or "").strip()
+            self.text = _T(el.get_text(" ", strip=True))
+        def css(self, selector):
+            try: return [_Node(x) for x in self._el.select(selector)]
+            except Exception: return []
+
+    class _Resp:
+        def __init__(self, status, html_content, url):
+            self.status=status; self.html_content=html_content; self.text=html_content; self.url=url
+            self._soup=BeautifulSoup(html_content or "", "html.parser")
+        def css(self, selector):
+            try: return [_Node(x) for x in self._soup.select(selector)]
+            except Exception: return []
+
+    class _FetcherFallback:
+        @staticmethod
+        def get(url, timeout=25, headers=None, follow_redirects=True):
+            r=requests.get(url, timeout=timeout, headers=headers or {}, allow_redirects=follow_redirects)
+            return _Resp(getattr(r,'status_code',0), r.text, str(getattr(r,'url',url)))
+    Fetcher=_FetcherFallback
+
 
 BASE_URL = "https://influencersgonewild.com"
 CATEGORY_URL = f"{BASE_URL}/category/onlyfans/"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+GENERIC_TAGS = {
+    "videos", "video", "photos", "photo", "cosplay", "full nude", "latina", "asian",
+    "ebony", "onlyfans", "fansly", "patreon", "youtube", "tiktok", "twitch",
+    "instagram", "celebrity", "leaked", "leaks", "nude", "nudes", "popular",
+    "main categories", "popular categories", "nipple slips", "leaked nudes",
+}
+GENERIC_CATEGORIES = {
+    "main categories", "popular categories", "nipple slips", "leaked nudes",
+    "onlyfans", "fansly", "patreon", "youtube", "tiktok", "twitch", "instagram", "celebrity",
+}
 
-def fetch_page(url: str, timeout: int = 25) -> Optional[Any]:
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
     try:
-        resp = Fetcher.get(url, timeout=timeout)
-        if resp.status == 200:
-            return resp
+        if hasattr(value, "clean"):
+            return str(value.clean()).strip()
     except Exception:
         pass
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def normalize_cdn_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return url
+    u = str(url).strip()
+    if u.startswith("//"):
+        u = "https:" + u
+    return re.sub(r"https?://cdn\d+\.influencersgonewild\.net", "https://cdn04.influencersgonewild.net", u, flags=re.I)
+
+
+def fetch_page(url: str, timeout: int = 25, retries: int = 3) -> Optional[Any]:
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = Fetcher.get(url, timeout=timeout, headers={
+                "User-Agent": UA,
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": BASE_URL + "/",
+            })
+            status = getattr(resp, "status", 0)
+            if status == 200:
+                return resp
+            if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            last_err = f"HTTP {status}"
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+    if last_err:
+        print(f"    [IGW] fetch failed {url}: {last_err}")
     return None
+
+
+def _extract_max_page(resp: Any) -> Optional[int]:
+    max_page = None
+    for el in resp.css("a.page-numbers, .pagination a, a[href*='/page/'], link[rel='next'], a[rel='next']"):
+        href = el.attrib.get("href", "") or ""
+        m = re.search(r"/category/onlyfans/page/(\d+)/?", href)
+        if not m:
+            m = re.search(r"/page/(\d+)/?", href)
+        if m:
+            max_page = max(max_page or 0, int(m.group(1)))
+    return max_page
+
+
+def _extract_img(el: Any) -> str:
+    if not el:
+        return ""
+    attrs = el.attrib
+    for k in ("data-src", "data-lazy-src", "data-original", "src"):
+        v = (attrs.get(k) or "").strip()
+        if v and not v.startswith("data:"):
+            return normalize_cdn_url(v) or ""
+    srcset = attrs.get("data-srcset") or attrs.get("srcset") or ""
+    urls = re.findall(r"(https?://[^\s,]+)", srcset)
+    if urls:
+        return normalize_cdn_url(urls[-1]) or ""
+    return ""
+
+
+def _extract_meta(resp: Any, key: str, attr: str = "property") -> Optional[str]:
+    for m in resp.css(f"meta[{attr}]"):
+        if (m.attrib.get(attr) or "").lower() == key.lower():
+            val = (m.attrib.get("content") or "").strip()
+            if val:
+                return val
+    return None
+
 
 def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
     url = CATEGORY_URL if page_num <= 1 else f"{BASE_URL}/category/onlyfans/page/{page_num}/"
@@ -23,31 +144,39 @@ def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
     if not resp:
         return [], None
 
-    articles = resp.css("article")
+    articles = resp.css("article.post, article")
     items = []
-
     for art in articles:
-        classes = art.attrib.get("class", "").split()
+        cls_raw = art.attrib.get("class", ""); classes = cls_raw.split() if isinstance(cls_raw, str) else list(cls_raw or [])
         post_id = next((c[5:] for c in classes if c.startswith("post-") and c[5:].isdigit()), None)
-        title_el = art.css(".entry-title a, h2 a, h3 a")
-        title = title_el[0].text.clean() if title_el and title_el[0].text else art.attrib.get("aria-label", "")
-        detail_url = title_el[0].attrib.get("href") if title_el else ""
-
-        if not post_id or not detail_url:
+        title_el = art.css(".entry-title a, h2 a, h3 a, a[rel='bookmark']")
+        if not title_el:
+            continue
+        title = _clean_text(getattr(title_el[0], "text", "")) or art.attrib.get("aria-label", "")
+        detail_url = urljoin(BASE_URL, title_el[0].attrib.get("href") or "")
+        if not post_id or not detail_url or "/category/" in urlsplit(detail_url).path.rstrip("/"):
             continue
 
-        img_el = art.css("img")
-        data_src = img_el[0].attrib.get("data-src") or img_el[0].attrib.get("src") if img_el else ""
+        img = art.css("img")
+        thumb = _extract_img(img[0]) if img else ""
         time_el = art.css("time")
-        date_str = time_el[0].text.clean() if time_el and time_el[0].text else ""
+        published_at = ""
+        if time_el:
+            published_at = time_el[0].attrib.get("datetime") or _clean_text(getattr(time_el[0], "text", ""))
 
-        # Extract model from category links or title
-        cat_links = art.css("a[href*='/category/']")
-        models = []
-        for cl in cat_links:
-            href = cl.attrib.get("href", "")
-            txt = cl.text.clean() if cl.text else ""
-            if txt and txt.lower() not in ["onlyfans", "tiktok", "main categories", "celebrity"]:
+        models: List[str] = []
+        categories: List[str] = ["onlyfans"]
+        for cl in art.css("a[href*='/category/']"):
+            txt = _clean_text(getattr(cl, "text", ""))
+            href = (cl.attrib.get("href") or "").lower()
+            low = txt.lower()
+            if not txt:
+                continue
+            if "/category/main-categories/" in href or low in GENERIC_CATEGORIES:
+                if low and low not in categories and low not in {"main categories", "popular categories"}:
+                    categories.append(low)
+                continue
+            if low not in {"popular", "nipple slips", "leaked nudes"} and txt not in models:
                 models.append(txt)
 
         items.append({
@@ -55,21 +184,18 @@ def scrape_listing(page_num: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
             "source_post_id": str(post_id),
             "title": title,
             "detail_url": detail_url,
-            "thumbnail_url": data_src,
+            "thumbnail_url": thumb,
             "models": models,
-            "published_at": date_str
+            "categories": list(dict.fromkeys(categories)),
+            "published_at": published_at,
         })
 
-    # Estimate max page from pagination if available
-    max_page = None
-    for pl in resp.css("a.page-numbers, .pagination a"):
-        m = re.search(r"/page/(\d+)/", pl.attrib.get("href", ""))
-        if m:
-            p_val = int(m.group(1))
-            if max_page is None or p_val > max_page:
-                max_page = p_val
-
+    max_page = _extract_max_page(resp)
+    # 404 pages on IGW may return page shell with 1 unrelated article; treat as end.
+    if page_num > 1 and not items:
+        max_page = page_num - 1
     return items, max_page
+
 
 def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     url = card.get("detail_url")
@@ -80,36 +206,157 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     if not resp:
         return card
 
-    # Extract HTML5 video direct MP4 source
-    video_sources = resp.css("video source")
+    html = ""
+    try:
+        html = str(getattr(resp, "html_content", "") or getattr(resp, "text", "") or "")
+    except Exception:
+        html = ""
+
+    # Direct MP4: prefer <source src>, then <video src>, then script/html scan.
     mp4_url = None
-    if video_sources:
-        mp4_url = video_sources[0].attrib.get("src")
+    for sel in ["video source[src]", "video source[data-src]", "source[type='video/mp4']", "video[src]", "video[data-src]"]:
+        for el in resp.css(sel):
+            src = el.attrib.get("src") or el.attrib.get("data-src")
+            if src and ".mp4" in src.lower():
+                mp4_url = normalize_cdn_url(src)
+                break
+        if mp4_url:
+            break
+    if not mp4_url:
+        for pat in [
+            r'https?://[^\s\"\'<>]+?\.mp4(?:\?[^\s\"\'<>]*)?',
+            r'"file"\s*:\s*"(https?://[^"]+?\.mp4[^"]*)"',
+            r'"src"\s*:\s*"(https?://[^"]+?\.mp4[^"]*)"',
+        ]:
+            m = re.search(pat, html, re.I)
+            if m:
+                mp4_url = normalize_cdn_url(m.group(1) if m.lastindex else m.group(0))
+                break
 
     servers = []
     if mp4_url:
+        quality = "1080p Full HD" if re.search(r"1080|fullhd|fhd", mp4_url, re.I) else "Original"
+        qscore = 1080 if quality.startswith("1080") else 720
         servers.append({
-            "name": "Direct 1080p MP4 (CDN)",
+            "name": f"Direct {quality} MP4 (CDN)",
+            "server": "InfluencersGoneWild CDN",
             "embed_url": mp4_url,
             "type": "direct_mp4",
-            "quality_label": "1080p Full HD",
-            "headers": {"Referer": "https://influencersgonewild.com/"}
+            "quality_label": quality,
+            "quality_score": qscore,
+            "headers": {"Referer": BASE_URL + "/"},
         })
 
-    tags = [t.text.clean() for t in resp.css("a[href*='/tag/']") if t.text]
-    
-    # If no model yet, extract from detail category
-    models = list(card.get("models", []))
+    # Tags: keep specific tags, drop only global nav/footer noise. Keep model/content tags.
+    tags = []
+    seen_tags = set()
+    nav_noise = {"videos", "video", "photos", "photo", "cosplay", "full nude", "latina", "asian", "ebony"}
+    for t in resp.css("a[href*='/tag/']"):
+        txt = _clean_text(getattr(t, "text", ""))
+        low = re.sub(r"\s+", " ", txt.lower()).strip()
+        if not low or len(low) < 2 or len(low) > 80:
+            continue
+        if low in nav_noise:
+            continue
+        # Avoid exact generic platform-only tag if better model tags exist later; keep for now.
+        if low in seen_tags:
+            continue
+        seen_tags.add(low)
+        tags.append(low)
+
+    # Screenshots: only main post-content images; exclude related/thumb/nav noise.
+    screenshots = []
+    seen_img = set()
+    content_selectors = [
+        ".entry-content img",
+        ".post-content img",
+        ".g1-content-narrow .entry-content img",
+        ".wp-block-image img",
+        "article .entry-content figure img",
+    ]
+    content_imgs = []
+    for sel in content_selectors:
+        content_imgs.extend(resp.css(sel))
+    if not content_imgs:
+        content_imgs = resp.css("article img")
+    for img in content_imgs:
+        src = ""
+        attrs = img.attrib or {}
+        for k in ("data-src", "data-lazy-src", "data-original", "data-large-file", "src"):
+            v = (attrs.get(k) or "").strip()
+            if v and not v.startswith("data:"):
+                src = normalize_cdn_url(v) or ""
+                break
+        if not src or src in seen_img:
+            continue
+        low_src = src.lower()
+        if any(x in low_src for x in ["/logo", "avatar", "icon", "favicon", "emoji", "banner-ad", "gravatar", "/plugins/", "/themes/"]):
+            continue
+        # Skip tiny WP thumbnails/crops; keep likely full-size screenshots.
+        if re.search(r"-\d{2,3}x\d{2,3}\.(?:jpe?g|png|webp)(?:\?|$)", low_src):
+            continue
+        if not any(x in low_src for x in ["/wp-content/uploads/", "cdn04.influencersgonewild.net", "cdn0"]):
+            continue
+        cls_raw = attrs.get("class") or ""; cls = " ".join(cls_raw.split() if isinstance(cls_raw,str) else list(cls_raw)).lower()
+        if any(x in cls for x in ["avatar", "logo", "icon", "attachment-thumbnail", "wp-post-image"]):
+            # wp-post-image can be featured; allow only if large upload and not tiny crop (already filtered)
+            if "wp-post-image" in cls and re.search(r"-\d{2,3}x\d{2,3}\.", low_src):
+                continue
+        seen_img.add(src)
+        screenshots.append(src)
+    screenshots = screenshots[:24]
+
+    # Models/categories from detail categories.
+    models = list(dict.fromkeys([m for m in (card.get("models") or []) if m]))
+    categories = list(dict.fromkeys([c for c in (card.get("categories") or ["onlyfans"]) if c]))
+    for cl in resp.css("a[href*='/category/']"):
+        txt = _clean_text(getattr(cl, "text", ""))
+        href = (cl.attrib.get("href") or "").lower()
+        low = txt.lower()
+        if not txt:
+            continue
+        if "/category/main-categories/" in href or low in GENERIC_CATEGORIES:
+            if low not in categories and low not in {"main categories", "popular categories"}:
+                categories.append(low)
+            continue
+        if low not in {"popular", "nipple slips", "leaked nudes"} and txt not in models:
+            models.append(txt)
+
+    # Fallback: infer model from title prefix before dash.
     if not models:
-        for cl in resp.css("a[href*='/category/']"):
-            txt = cl.text.clean() if cl.text else ""
-            if txt and txt.lower() not in ["onlyfans", "tiktok", "main categories", "celebrity"]:
-                models.append(txt)
+        title = _clean_text(card.get("title"))
+        if " - " in title:
+            cand = title.split(" - ", 1)[0].strip()
+            if 2 <= len(cand) <= 60 and cand.lower() not in GENERIC_TAGS:
+                models = [cand]
+
+    published_at = (
+        _extract_meta(resp, "article:published_time")
+        or _extract_meta(resp, "og:updated_time")
+        or card.get("published_at")
+    )
+    og_image = normalize_cdn_url(_extract_meta(resp, "og:image") or _extract_meta(resp, "twitter:image") or card.get("thumbnail_url"))
+    description = _extract_meta(resp, "description") or _extract_meta(resp, "og:description")
 
     merged = dict(card)
     merged["servers"] = servers
     merged["full_video_url"] = mp4_url
     merged["video_mime_type"] = "video/mp4" if mp4_url else "embed/iframe"
+    merged["thumbnail_url"] = og_image or merged.get("thumbnail_url")
+    merged["published_at"] = published_at
     merged["tags"] = tags
     merged["models"] = models
+    merged["actors"] = models
+    merged["categories"] = list(dict.fromkeys(categories or ["onlyfans"]))
+    merged["screenshots"] = screenshots
+    merged["raw_payload"] = {
+        **(card.get("raw_payload") or {}),
+        "source": "influencersgonewild",
+        "og_image": og_image,
+        "description": description,
+        "detail_fetched": bool(resp),
+        "screenshots": screenshots,
+    }
     return merged
+
+

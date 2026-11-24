@@ -26,8 +26,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  guard:
+    name: Check Scraper Kill Switch
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check SCRAPER_ENABLED repository variable
+        id: check
+        run: |
+          if [ "${{ vars.SCRAPER_ENABLED }}" = "false" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "[STOP] SCRAPER_ENABLED=false. Skipping scraper fleet."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "[OK] Scraper fleet enabled."
+          fi
+
   scrape-fleet:
-    name: Scrape All Categories (Viral MMS, Japanese JAV, Myanmar & OnlyFans)
+    name: Scrape All Feeds (Viral MMS, Japanese JAV, Myanmar, OnlyFans & Voyeur House)
+    needs: guard
+    if: needs.guard.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 355 # 5h55m (under GitHub's 360m hard limit)
 
@@ -74,6 +93,7 @@ jobs:
           echo "Feed 2: Japanese JAV (SupJav -> scraper.japanese_videos)"
           echo "Feed 3: Myanmar (Buu Mal -> scraper.myanmar_videos)"
           echo "Feed 4: OnlyFans Leaks (Multi-Site Aggregator -> scraper.onlyfans_videos)"
+          echo "Feed 5: Voyeur House (5 isolated websites -> isolated per-site tables)"
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -86,7 +106,9 @@ jobs:
             --workers 4
 
       - name: Persist Scraper Progress Checkpoints
-        if: always()
+        # Never commit/push checkpoints from a cancelled run: partial cycles can
+        # poison known-ID caches, and cancellation must remain a hard stop.
+        if: ${{ !cancelled() }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -100,7 +122,10 @@ jobs:
             scraper/categories/myanmar/known_post_ids.json \
             scraper/categories/onlyfans/checkpoint.json \
             scraper/categories/onlyfans/known_post_ids.json \
-            scraper/categories/onlyfans/progress.json; do
+            scraper/categories/onlyfans/progress.json \
+            scraper/categories/voyeurhouse/checkpoint.json \
+            scraper/categories/voyeurhouse/known_post_ids.json \
+            scraper/categories/voyeurhouse/progress.json; do
             [ -f "$f" ] && git add "$f" || true
           done
           if ! git diff --staged --quiet; then
@@ -116,7 +141,7 @@ jobs:
 
       - name: Autotrigger successor run without queuing
         id: self-chain
-        if: ${{ always() && steps.scraper-daemon.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.scraper-daemon.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

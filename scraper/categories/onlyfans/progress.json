@@ -1,0 +1,39 @@
+{
+  "status": "completed",
+  "started_at": "2026-11-23T18:25:28.119231+00:00",
+  "mode": "new_only",
+  "sites_requested": [
+    "influencersgonewild"
+  ],
+  "pages_per_site": 1,
+  "dry_run": true,
+  "updated_at": "2026-11-23T18:28:40.061365+00:00",
+  "sites": {
+    "influencersgonewild": {
+      "site": "influencersgonewild",
+      "mode": "new_only",
+      "status": "completed",
+      "start_page": 1,
+      "end_page": 1,
+      "current_page": 1,
+      "pages_crawled": 1,
+      "items_found": 14,
+      "items_new": 10,
+      "items_merged": 0,
+      "skipped_known": 4,
+      "upserted": 0,
+      "errors": 0,
+      "last_error": null,
+      "started_at": "2026-11-23T18:26:17.330065+00:00",
+      "finished_at": "2026-11-23T18:26:22.892370+00:00"
+    }
+  },
+  "finished_at": "2026-11-23T18:28:40.061216+00:00",
+  "totals": {
+    "items_found": 14,
+    "items_new": 10,
+    "items_merged": 0,
+    "skipped_known": 4,
+    "canonical_total": null
+  }
+}

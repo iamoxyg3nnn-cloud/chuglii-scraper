@@ -20,7 +20,8 @@ import argparse
 import threading
 import atexit
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -51,7 +52,8 @@ from scraper.proxy_pool import GLOBAL_PROXY_POOL
 from scraper.db import (
     upsert_japanese_videos_batch,
     get_japanese_videos,
-    get_supabase_client
+    get_supabase_client,
+    rpc_result_succeeded,
 )
 
 BASE_URL = "https://supjav.com"
@@ -309,109 +311,57 @@ def warm_up_session(session: requests.Session) -> bool:
 
 # ─── Checkpoint & Known IDs State Management ─────────────────────────────────
 
-def load_checkpoint() -> Dict[str, Any]:
-    """
-    Loads scraper checkpoint state:
-    1. Primary: Fetches latest progress state directly from Supabase (scraper.checkpoints).
-    2. Fallback: Reads local checkpoint.json if Supabase is temporarily unreachable.
-    """
-    try:
-        from scraper.db import get_scraper_checkpoint
-        sb_data = get_scraper_checkpoint("supjav")
-        if sb_data and "categories" in sb_data:
-            print("  [✓] Loaded latest SupJav catalog checkpoint from Supabase.")
-            try:
-                with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-                    json.dump(sb_data, f, indent=2)
-            except Exception:
-                pass
-            return sb_data
-    except Exception as e:
-        print(f"  [!] Note: Supabase checkpoint fetch bypassed ({e}), checking local cache...")
-
-    default_state = {
+def _default_checkpoint() -> Dict[str, Any]:
+    return {
         "categories": {
             cat: {"current_page": 2, "max_pages": info["default_max"], "completed": False}
             for cat, info in CATEGORIES_CONFIG.items()
         },
-        "stats": {
-            "total_ingested": 0,
-            "last_sync": None
-        }
+        "stats": {"total_ingested": 0, "last_sync": None},
     }
-    if CHECKPOINT_FILE.exists():
-        try:
-            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for cat, info in CATEGORIES_CONFIG.items():
-                    if cat not in data.get("categories", {}):
-                        data.setdefault("categories", {})[cat] = {
-                            "current_page": 2,
-                            "max_pages": info["default_max"],
-                            "completed": False
-                        }
-                return data
-        except Exception as e:
-            print(f"[!] Warning reading checkpoint.json ({e}), creating fresh checkpoint.")
-    return default_state
 
-def save_checkpoint(data: Dict[str, Any]) -> None:
-    """
-    Saves scraper checkpoint state:
-    1. Atomically updates Supabase scraper.checkpoints table.
-    2. Mirrors state to local checkpoint.json for offline resilience.
-    """
-    try:
-        data["stats"]["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        from scraper.db import set_scraper_checkpoint
-        set_scraper_checkpoint("supjav", data)
-    except Exception as e:
-        print(f"    [!] Note: Supabase checkpoint sync skipped ({e}).")
 
-    try:
-        with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"[!] Failed to save local checkpoint: {e}")
+def load_checkpoint() -> Dict[str, Any]:
+    """Loads SupJav state from Supabase first and the atomic local cache second."""
+    from scraper.progress import load_checkpoint as _load
+    state = _load("supjav", CHECKPOINT_FILE, _default_checkpoint())
+    categories = state.setdefault("categories", {})
+    for cat, info in CATEGORIES_CONFIG.items():
+        categories.setdefault(cat, {
+            "current_page": 2,
+            "max_pages": info["default_max"],
+            "completed": False,
+        })
+    state.setdefault("stats", {"total_ingested": 0, "last_sync": None})
+    return state
+
+
+def save_checkpoint(data: Dict[str, Any]) -> bool:
+    """Persists SupJav state remotely and mirrors it locally."""
+    from scraper.progress import save_checkpoint as _save
+    data.setdefault("stats", {})["last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return _save("supjav", data, CHECKPOINT_FILE)
+
 
 def load_known_post_ids() -> Set[str]:
-    """
-    Loads known post IDs:
-    1. Primary: Queries Supabase directly via scraper_get_known_post_ids('supjav')
-    2. Local Cache: Merges with known_post_ids.json for ultra-fast in-memory deduplication.
-    """
-    known_ids: Set[str] = set()
-    if KNOWN_IDS_FILE.exists():
-        try:
-            with open(KNOWN_IDS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    known_ids.update(str(x) for x in data)
-        except Exception:
-            pass
+    """Loads SupJav known IDs from the central ledger + local cache."""
+    from scraper.progress import load_known_ids as _load
+    ids = _load("supjav", KNOWN_IDS_FILE)
+    save_known_post_ids(ids)
+    return ids
 
-    try:
-        from scraper.db import get_scraper_known_post_ids
-        sb_ids = get_scraper_known_post_ids("supjav", limit=25000)
-        if sb_ids:
-            known_ids.update(sb_ids)
-            print(f"  [✓] Synced {len(known_ids)} known post IDs from Supabase.")
-            save_known_post_ids(known_ids)
-            return known_ids
-    except Exception as e:
-        print(f"  [!] Note: Supabase ID sync bypassed ({e}). Using local cache ({len(known_ids)} IDs).")
 
-    return known_ids
+def save_known_post_ids(
+    known_ids: Set[str],
+    new_ids: Optional[Set[str]] = None,
+    status: str = "stored",
+) -> None:
+    """Mirrors IDs locally and records newly-confirmed IDs in Supabase."""
+    from scraper.progress import mark_known_ids, save_known_ids as _save
+    if new_ids:
+        mark_known_ids(new_ids, default_site="supjav", status=status)
+    _save(KNOWN_IDS_FILE, known_ids)
 
-    return known_ids
-
-def save_known_post_ids(known_ids: Set[str]) -> None:
-    """Saves set of known post IDs to disk cache."""
-    try:
-        with open(KNOWN_IDS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(known_ids)), f)
-    except Exception as e:
-        print(f"[!] Failed to save known_post_ids.json: {e}")
 
 # ─── Detail Scraper & Embed Resolver ─────────────────────────────────────────
 
@@ -678,7 +628,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
         if not link_tag:
             continue
 
-        detail_url = link_tag.get("href", "")
+        detail_url = urljoin(BASE_URL, link_tag.get("href", ""))
         post_id_match = re.search(r"/(\d+)\.html", detail_url)
         if not post_id_match:
             continue
@@ -692,7 +642,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
         img_tag = card.select_one("img[data-original], img[src]")
         thumb_url = ""
         if img_tag:
-            thumb_url = img_tag.get("data-original") or img_tag.get("src", "")
+            thumb_url = urljoin(BASE_URL, img_tag.get("data-original") or img_tag.get("src", ""))
 
         meta_text = card.get_text()
         views_match = re.search(r"([\d,]+)\s+Views", meta_text, re.IGNORECASE)
@@ -728,9 +678,11 @@ def ingest_category_pages(
     workers: int = 3
 ) -> int:
     """
-    Ingests a range of pages for a specific category.
-    Performs instant deduplication against known_ids, concurrent detail fetching,
-    polishing, and batch upserting into Supabase.
+    Ingests a range of pages for a specific category and persists a safe cursor.
+
+    ``scrape_listing_page`` returns ``None`` for a Cloudflare/blocked page and
+    ``[]`` for a confirmed empty page.  Only the latter may advance the cursor.
+    IDs are recorded in the central ledger only after a successful upsert.
     """
     session = create_session()
     warm_up_session(session)
@@ -740,16 +692,23 @@ def ingest_category_pages(
     print("=" * 65)
 
     total_ingested = 0
-    pending_records = []
+    cat_state = checkpoint.setdefault("categories", {}).setdefault(
+        category, {"current_page": from_page, "max_pages": to_page, "completed": False}
+    )
 
     for page_num in range(from_page, to_page + 1):
         print(f"\n--- Category: {category} | Page {page_num}/{to_page} ---")
         items = scrape_listing_page(session, page_num=page_num, category=category)
+        if items is None:
+            print("    [!] Listing page was blocked/unavailable. Keeping cursor on this page.")
+            break
         if not items:
-            print("    [!] Page returned 0 items. Moving to next.")
-            continue
+            print("    [✓] Confirmed empty page (end of category). Marking completed.")
+            cat_state["current_page"] = page_num + 1
+            cat_state["completed"] = True
+            save_checkpoint(checkpoint)
+            break
 
-        # Filter out already indexed items
         new_items = [itm for itm in items if itm["source_post_id"] not in known_ids]
         skipped_count = len(items) - len(new_items)
         if skipped_count > 0:
@@ -757,8 +716,7 @@ def ingest_category_pages(
 
         if not new_items:
             print("    [✓] All videos on this page are already indexed.")
-            # Still update checkpoint so we don't re-crawl next time
-            checkpoint["categories"][category]["current_page"] = page_num
+            cat_state["current_page"] = page_num + 1
             save_checkpoint(checkpoint)
             time.sleep(0.3)
             continue
@@ -767,41 +725,35 @@ def ingest_category_pages(
         enriched_items = enrich_items_concurrently(new_items, max_workers=workers)
         print(f"    [✓] Successfully resolved working mirrors for {len(enriched_items)}/{len(new_items)} videos.")
 
+        pending_records: List[Dict[str, Any]] = []
+        pending_ids: Set[str] = set()
         for itm in enriched_items:
             srv_names = [s["name"] for s in itm.get("servers", [])]
             print(f"      + #{itm['source_post_id']} - {itm['title'][:40]}... -> {srv_names}")
-            polished = polish_supjav_record(itm)
-            pending_records.append(polished)
-            known_ids.add(itm["source_post_id"])
+            pending_records.append(polish_supjav_record(itm))
+            pending_ids.add(str(itm["source_post_id"]))
 
-        # Flush batch when size reached
-        if len(pending_records) >= batch_size:
-            print(f"\n[*] Upserting batch of {len(pending_records)} videos to Supabase...")
+        if pending_records:
             res = upsert_japanese_videos_batch(pending_records)
-            print(f"    [✓] Batch upsert result: {res}")
+            if not rpc_result_succeeded(res):
+                print(f"    [!] Upsert failed on page {page_num}: {res}. IDs stay unmarked for retry.")
+                break
+            known_ids.update(pending_ids)
+            save_known_post_ids(known_ids, new_ids=pending_ids, status="stored")
             total_ingested += len(pending_records)
-            checkpoint["stats"]["total_ingested"] = checkpoint["stats"].get("total_ingested", 0) + len(pending_records)
-            pending_records = []
-            save_known_post_ids(known_ids)
+            checkpoint.setdefault("stats", {})["total_ingested"] = (
+                checkpoint["stats"].get("total_ingested", 0) + len(pending_records)
+            )
 
-        # Update checkpoint page
-        checkpoint["categories"][category]["current_page"] = page_num
+        cat_state["current_page"] = page_num + 1
+        if cat_state["current_page"] > cat_state.get("max_pages", to_page):
+            cat_state["completed"] = True
         save_checkpoint(checkpoint)
         time.sleep(1.2)  # Polite page pacing
 
-    # Flush any remaining items
-    if pending_records:
-        print(f"\n[*] Upserting final batch of {len(pending_records)} videos to Supabase...")
-        res = upsert_japanese_videos_batch(pending_records)
-        print(f"    [✓] Final upsert result: {res}")
-        total_ingested += len(pending_records)
-        checkpoint["stats"]["total_ingested"] = checkpoint["stats"].get("total_ingested", 0) + len(pending_records)
-        pending_records = []
-        save_known_post_ids(known_ids)
-        save_checkpoint(checkpoint)
-
     print(f"\n[✓] Finished {cat_info['name']} (Pages {from_page}-{to_page}). New videos added: {total_ingested}")
     return total_ingested
+
 
 # ─── Full Catalog Ingestion Loop (Every Video) ───────────────────────────────
 
@@ -894,6 +846,9 @@ def run_watch_mode(
             try:
                 # Check page 1 for the newest releases
                 items = scrape_listing_page(session, page_num=1, category=cat)
+                if items is None:
+                    print(f"  [{cat}] Listing blocked/unavailable. Skipping without touching known IDs.")
+                    continue
                 new_items = [itm for itm in items if itm["source_post_id"] not in known_ids]
 
                 if not new_items:
@@ -905,17 +860,21 @@ def run_watch_mode(
 
                 if enriched_items:
                     records = []
+                    new_ids: Set[str] = set()
                     for itm in enriched_items:
                         srv_names = [s["name"] for s in itm.get("servers", [])]
                         print(f"    + New Release: #{itm['source_post_id']} - {itm['title'][:40]}... -> {srv_names}")
-                        polished = polish_supjav_record(itm)
-                        records.append(polished)
-                        known_ids.add(itm["source_post_id"])
+                        records.append(polish_supjav_record(itm))
+                        new_ids.add(str(itm["source_post_id"]))
 
                     res = upsert_japanese_videos_batch(records)
+                    if not rpc_result_succeeded(res):
+                        print(f"    [!] Upsert failed: {res}. Keeping IDs unmarked for retry.")
+                        continue
                     print(f"    [✓] Ingested {len(records)} new releases into database ({res})")
                     cycle_new_count += len(records)
-                    save_known_post_ids(known_ids)
+                    known_ids.update(new_ids)
+                    save_known_post_ids(known_ids, new_ids=new_ids, status="stored")
                     checkpoint["stats"]["total_ingested"] = checkpoint["stats"].get("total_ingested", 0) + len(records)
                     save_checkpoint(checkpoint)
                 else:

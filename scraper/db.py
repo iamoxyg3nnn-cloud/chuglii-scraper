@@ -18,6 +18,17 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 # Prioritize service_role key for scraper writes
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_API_KEY") or os.getenv("SUPABASE_ANON_KEY", "")
 
+
+def rpc_result_succeeded(result: Any) -> bool:
+    """True only when an RPC result represents a completed write.
+
+    Some Supabase functions report application failures with HTTP 200 and a
+    JSON body such as ``{"success": false, "error": "..."}``.  Every caller
+    that advances a cursor or records a known ID must use this check.
+    """
+    return result is not None and not (isinstance(result, dict) and result.get("success") is False)
+
+
 def get_supabase_client() -> Client:
     """Returns an authenticated Supabase client."""
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -75,17 +86,25 @@ def upsert_scraped_videos_batch(polished_records: List[Dict[str, Any]], retries:
         return {"success": True, "count": 0}
     
     res = call_supabase_rpc("scraper_upsert_videos", {"items": polished_records}, retries=retries)
-    if res is not None:
+    if rpc_result_succeeded(res):
         return res
-    
-    # Fallback to supabase-py client if available
-    try:
-        supabase = get_supabase_client()
-        response = supabase.rpc("scraper_upsert_videos", {"items": polished_records}).execute()
-        return response.data
-    except Exception as e:
-        print(f"[!] Supabase Viral MMS upsert batch failed after {retries} attempts: {e}")
-        return {"success": False, "error": str(e), "count": 0}
+
+    # Fallback to supabase-py client if available (same retry budget as every
+    # other isolated table, so a transient tunnel blip cannot lose a batch).
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_videos", {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Viral MMS upsert batch failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(wait_time)
 
 def get_scraped_videos(source_site: Optional[str] = None, tag: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
     """
@@ -114,7 +133,7 @@ def upsert_japanese_videos_batch(polished_records: List[Dict[str, Any]], retries
         return {"success": True, "count": 0}
     
     res = call_supabase_rpc("scraper_upsert_japanese_videos", {"items": polished_records}, retries=retries)
-    if res is not None:
+    if rpc_result_succeeded(res):
         return res
 
     # Fallback to supabase-py client if available
@@ -122,7 +141,9 @@ def upsert_japanese_videos_batch(polished_records: List[Dict[str, Any]], retries
         try:
             supabase = get_supabase_client()
             response = supabase.rpc("scraper_upsert_japanese_videos", {"items": polished_records}).execute()
-            return response.data
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
         except Exception as e:
             if attempt == retries - 1:
                 print(f"[!] Supabase Japanese JAV upsert batch failed after {retries} attempts: {e}")
@@ -164,7 +185,7 @@ def upsert_myanmar_videos_batch(polished_records: List[Dict[str, Any]], retries:
         return {"success": True, "count": 0}
     
     res = call_supabase_rpc("scraper_upsert_myanmar_videos", {"items": polished_records}, retries=retries)
-    if res is not None:
+    if rpc_result_succeeded(res):
         return res
 
     # Fallback to supabase-py client if available
@@ -172,7 +193,9 @@ def upsert_myanmar_videos_batch(polished_records: List[Dict[str, Any]], retries:
         try:
             supabase = get_supabase_client()
             response = supabase.rpc("scraper_upsert_myanmar_videos", {"items": polished_records}).execute()
-            return response.data
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
         except Exception as e:
             if attempt == retries - 1:
                 print(f"[!] Supabase Myanmar upsert batch failed after {retries} attempts: {e}")
@@ -205,7 +228,6 @@ ONLYFANS_SOURCE_TABLE_RPC = {
     "internetchicks": "scraper_insert_onlyfans_internetchicks_videos",
     "influencersgonewild": "scraper_insert_onlyfans_influencersgonewild_videos",
     "sheeshfans": "scraper_insert_onlyfans_sheeshfans_videos",
-    "pimpbunny": "scraper_insert_onlyfans_pimpbunny_videos",
 }
 
 def upsert_onlyfans_video(polished_record: Dict[str, Any]) -> Any:
@@ -222,7 +244,7 @@ def upsert_onlyfans_videos_batch(polished_records: List[Dict[str, Any]], retries
 
     # Isolated RPC strictly targeting scraper.onlyfans_videos
     res = call_supabase_rpc("scraper_upsert_onlyfans_videos", {"items": polished_records}, retries=retries)
-    if res is not None:
+    if rpc_result_succeeded(res):
         return res
 
     # Fallback to direct supabase-py client strictly on scraper_upsert_onlyfans_videos
@@ -230,7 +252,9 @@ def upsert_onlyfans_videos_batch(polished_records: List[Dict[str, Any]], retries
         try:
             supabase = get_supabase_client()
             response = supabase.rpc("scraper_upsert_onlyfans_videos", {"items": polished_records}).execute()
-            return response.data
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
         except Exception as e:
             if attempt == retries - 1:
                 print(f"[!] Supabase OnlyFans upsert batch failed after {retries} attempts: {e}")
@@ -322,6 +346,151 @@ def get_onlyfans_videos(source_site: Optional[str] = "internetchicks", tag: Opti
         return []
 
 
+# ============================================================================
+# Isolated Voyeur House Database Functions
+# No cross-category dedupe, no fallback to scraper.videos or other tables.
+# ============================================================================
+
+def upsert_voyeurhouse_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    if not polished_records:
+        return {"success": True, "count": 0}
+    res = call_supabase_rpc("scraper_upsert_voyeurhouse_videos", {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_voyeurhouse_videos", {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Voyeur House upsert failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            time.sleep((attempt + 1) * 3)
+
+
+def get_voyeurhouse_videos(source_site: Optional[str] = None, tag: Optional[str] = None, category: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset,
+    }
+    try:
+        response = supabase.rpc("scraper_get_voyeurhouse_videos", params).execute()
+        return response.data or []
+    except Exception as e:
+        print(f"[!] Failed to fetch Voyeur House videos: {e}")
+        return []
+
+
+# ============================================================================
+# Voyeur House — additional isolated websites (AVS family)
+# Same category as voyeurhouseorg, but each website has its OWN table + RPC
+# family. No cross-site dedupe, merge, fallback, or canonical cache.
+# ============================================================================
+
+VOYEURHOUSE_AVS_SITES = (
+    "hotscopesvoyeurhouse",
+    "reallifecamto",
+    "hotscopesspygasm",
+    "hotscopesreallifecam",
+)
+
+
+def _voyeurhouse_avs_rpc(site: str, kind: str) -> str:
+    if site not in VOYEURHOUSE_AVS_SITES:
+        raise ValueError(f"Unknown Voyeur House source site: {site}")
+    return f"scraper_{kind}_{site}_videos"
+
+
+def upsert_voyeurhouse_site_videos_batch(site: str, polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """Writes ONLY to the isolated table belonging to ``site``."""
+    if not polished_records:
+        return {"success": True, "count": 0}
+    rpc = _voyeurhouse_avs_rpc(site, "upsert")
+    res = call_supabase_rpc(rpc, {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc(rpc, {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Voyeur House upsert failed for {site} after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            time.sleep((attempt + 1) * 3)
+
+
+def get_voyeurhouse_site_videos(
+    site: str,
+    source_site: Optional[str] = None,
+    tag: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: str = "newest",
+    limit: int = 24,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site or site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset,
+    }
+    try:
+        response = supabase.rpc(_voyeurhouse_avs_rpc(site, "get"), params).execute()
+        return response.data or []
+    except Exception as e:
+        print(f"[!] Failed to fetch Voyeur House videos for {site}: {e}")
+        return []
+
+
+def count_voyeurhouse_site_videos(
+    site: str,
+    source_site: Optional[str] = None,
+    tag: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+) -> int:
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site or site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+    }
+    try:
+        response = supabase.rpc(f"scraper_count_{site}_videos", params).execute()
+        return int(response.data or 0)
+    except Exception as e:
+        print(f"[!] Failed to count Voyeur House videos for {site}: {e}")
+        return 0
+
+
+def get_voyeurhouse_site_video_by_id(site: str, video_id: str) -> Optional[Dict[str, Any]]:
+    supabase = get_supabase_client()
+    try:
+        response = supabase.rpc(f"scraper_get_{site}_video_by_id", {"p_id": video_id}).execute()
+        rows = response.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        print(f"[!] Failed to fetch Voyeur House video by id for {site}: {e}")
+        return None
 
 
 # ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
@@ -370,8 +539,15 @@ def wait_for_supabase(max_wait_seconds: int = 600, poll_interval: int = 15) -> b
     return False
 
 def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, timeout: float = 15.0) -> Any:
-    """Executes a Supabase RPC function via direct REST call with automatic retry."""
+    """Executes a Supabase RPC via REST with retry and explicit failure reporting.
+
+    A ``None`` return value now always means "the write did not happen".
+    Callers must never treat it as success.  JSON payloads carrying
+    ``"success": false`` are also treated as failures (some SQL functions
+    signal application errors with HTTP 200).
+    """
     if not SUPABASE_URL or not SUPABASE_KEY:
+        print(f"[!] Supabase RPC {func_name} skipped: missing URL or key")
         return None
     endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/{func_name}"
     headers = {
@@ -379,40 +555,75 @@ def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, r
         "authorization": f"Bearer {SUPABASE_KEY}",
         "content-type": "application/json; charset=utf-8"
     }
-    for attempt in range(retries):
+    attempts = max(1, retries)
+    last_error = "no response"
+    for attempt in range(attempts):
         try:
             with httpx.Client(timeout=timeout) as client:
                 res = client.post(endpoint, json=params or {}, headers=headers)
-                if res.status_code == 200:
-                    return res.json()
-                elif res.status_code in (502, 530, 504):
+
+            if 200 <= res.status_code < 300:
+                try:
+                    data = res.json()
+                except ValueError:
+                    data = None
+                if isinstance(data, dict) and data.get("success") is False:
+                    last_error = f"RPC reported failure: {data}"
+                else:
+                    return data
+            else:
+                last_error = f"HTTP {res.status_code}: {res.text[:300]}"
+                if res.status_code in (502, 503, 504, 530):
                     if attempt == 0:
                         # Wait up to 120s for tunnel recovery before next retry
                         wait_for_supabase(max_wait_seconds=120, poll_interval=10)
-                    else:
-                        time.sleep(2.0 * (attempt + 1))
-        except Exception:
-            time.sleep(1.0)
+                        continue
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        if attempt < attempts - 1:
+            time.sleep(min(2.0 * (attempt + 1), 10.0))
+
+    print(f"[!] Supabase RPC {func_name} failed after {attempts} attempts: {last_error}")
     return None
 
 def get_scraper_checkpoint(key: str) -> Dict[str, Any]:
     """Retrieves current progress checkpoint directly from Supabase scraper.checkpoints."""
     data = call_supabase_rpc("scraper_get_checkpoint", {"p_key": key})
-    if isinstance(data, dict):
+    if isinstance(data, dict) and data.get("success") is not False:
         return data
     return {}
 
 def set_scraper_checkpoint(key: str, state: Dict[str, Any]) -> bool:
     """Persists progress checkpoint atomically into Supabase scraper.checkpoints."""
     data = call_supabase_rpc("scraper_set_checkpoint", {"p_key": key, "p_state": state})
-    return bool(data and data.get("success"))
+    return isinstance(data, dict) and data.get("success") is True
 
-def get_scraper_known_post_ids(site: str, limit: int = 25000) -> set:
+def get_scraper_known_post_ids(site: str, limit: int = 50000) -> set:
     """Retrieves recently indexed post IDs directly from Supabase to prevent duplicate processing."""
     data = call_supabase_rpc("scraper_get_known_post_ids", {"p_site": site, "p_limit": limit})
     if isinstance(data, list):
         return set(str(x) for x in data)
     return set()
+
+
+def add_scraper_known_post_ids(site: str, post_ids: List[str], status: str = "seen") -> Dict[str, Any]:
+    """Persists newly-confirmed post IDs in the central deduplication ledger.
+
+    ``status='stored'`` means the video row exists; ``status='seen'`` means the
+    ID was checked and intentionally skipped (dead link / photo set).  Both
+    prevent re-crawling, but only 'stored' counts as ingested.
+    """
+    ids = [str(x).strip() for x in post_ids if str(x).strip()]
+    if not ids:
+        return {"success": True, "count": 0}
+    data = call_supabase_rpc(
+        "scraper_add_known_post_ids",
+        {"p_site": site, "p_ids": ids, "p_status": status},
+    )
+    if isinstance(data, dict):
+        return data
+    return {"success": False, "error": "scraper_add_known_post_ids unavailable", "count": 0}
 
 
 

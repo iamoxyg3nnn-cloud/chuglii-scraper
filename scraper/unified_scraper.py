@@ -4,6 +4,8 @@ Combines:
   1. Viral MMS (MMSVibeX -> scraper.videos)
   2. Japanese JAV (SupJav -> scraper.japanese_videos)
   3. Myanmar (Buu Mal -> scraper.myanmar_videos)
+  4. OnlyFans Leaks (multi-site -> scraper.onlyfans_videos)
+  5. Voyeur House (5 isolated websites -> per-site scraper tables)
 
 Features:
   - Human-like adaptive rate limiting with randomized jitter
@@ -65,7 +67,12 @@ signal.signal(signal.SIGINT, handle_shutdown_signal)
 if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
-from scraper.db import get_supabase_client, wait_for_supabase, is_supabase_healthy
+from scraper.db import (
+    get_supabase_client,
+    is_supabase_healthy,
+    rpc_result_succeeded,
+    wait_for_supabase,
+)
 from scraper.categories.japanese.pipeline import (
     create_session as create_japanese_session,
     warm_up_session as warm_up_japanese_session,
@@ -102,6 +109,7 @@ VIRAL_MMS_KNOWN_IDS: Set[str] = set()
 JAV_KNOWN_IDS: Set[str] = set()
 MYANMAR_KNOWN_IDS: Set[str] = set()
 CACHES_INITIALIZED: bool = False
+FEED_STATUS: Dict[str, str] = {}
 
 def init_known_id_caches() -> None:
     """Preloads existing post IDs from Supabase and local disks for zero-redundancy deduplication."""
@@ -151,385 +159,168 @@ def init_known_id_caches() -> None:
 # ─── Viral MMS Ingestion Task ────────────────────────────────────────────────
 
 def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
-    """Runs Viral MMS ingestion: optionally checks Page 1 for new releases, advances cursor if not completed."""
+    """Runs Viral MMS ingestion without advancing past blocked/failed pages."""
     global VIRAL_MMS_KNOWN_IDS
     log("\n" + "=" * 65)
-    log(f"  [FEED 1/3] Viral MMS Scraper | Isolated Schema")
+    log("  [FEED 1/5] Viral MMS Scraper | Isolated Schema")
     log("=" * 65)
     import importlib
     mms_mod = importlib.import_module("scraper.categories.viral-mms.pipeline")
-    scrape_mms_listing = mms_mod.scrape_listing_page
+    scrape_mms = mms_mod.scrape_listing_page_with_status
     save_mms_known_ids = mms_mod.save_known_ids
-    load_mms_checkpoint = getattr(mms_mod, "load_checkpoint", None)
-    save_mms_checkpoint = getattr(mms_mod, "save_checkpoint", None)
+    load_mms_checkpoint = mms_mod.load_checkpoint
+    save_mms_checkpoint = mms_mod.save_checkpoint
     from scraper.polish import polish_scraped_record
     from scraper.db import upsert_scraped_videos_batch
 
     total_ingested = 0
-    try:
-        # 1. New incoming leaks (Page 1) - only when check_head is enabled
-        if check_head:
-            p1_items = scrape_mms_listing(1, filter_mode="latest", category=None)
-            if p1_items:
-                new_p1 = [itm for itm in p1_items if str(itm.get("post_id")) not in VIRAL_MMS_KNOWN_IDS]
-                if new_p1:
-                    log(f"    [+] Page 1: Found {len(new_p1)} brand new leaks! Ingesting...")
-                    polished_batch = [polish_scraped_record(itm) for itm in new_p1]
-                    res = upsert_scraped_videos_batch(polished_batch)
-                    for itm in new_p1:
-                        VIRAL_MMS_KNOWN_IDS.add(str(itm.get("post_id")))
-                    save_mms_known_ids(VIRAL_MMS_KNOWN_IDS)
-                    total_ingested += len(polished_batch)
-                    log(f"    [✓] Page 1: Ingested {len(polished_batch)} new Viral MMS videos")
-                else:
-                    log(f"    [Head] Page 1: Up to date (all {len(p1_items)} releases already indexed)")
-            else:
-                log("    [Head] Page 1: Empty response from MMSVibeX")
 
-        # 2. Historical backfill cursor
-        mms_state = load_mms_checkpoint() if load_mms_checkpoint else {"current_page": 221, "max_pages": 221, "completed": True}
-        
-        if mms_state.get("completed", False):
+    def ingest(items: List[Dict[str, Any]], label: str) -> bool:
+        nonlocal total_ingested
+        new_items = [itm for itm in items if str(itm.get("post_id")) not in VIRAL_MMS_KNOWN_IDS]
+        if not new_items:
+            log(f"    {label}: up to date (all {len(items)} releases already indexed)")
+            return True
+        batch = [polish_scraped_record(itm) for itm in new_items]
+        result = upsert_scraped_videos_batch(batch)
+        if not rpc_result_succeeded(result):
+            log(f"    [!] {label}: upsert failed ({result}). Keeping IDs unmarked for retry.")
+            return False
+        confirmed = {str(itm.get("post_id")) for itm in new_items}
+        VIRAL_MMS_KNOWN_IDS.update(confirmed)
+        save_mms_known_ids(VIRAL_MMS_KNOWN_IDS, new_ids=confirmed, status="stored")
+        total_ingested += len(batch)
+        log(f"    [✓] {label}: ingested {len(batch)} new Viral MMS videos")
+        return True
+
+    try:
+        if check_head:
+            p1_items, fetch_ok = scrape_mms(1, filter_mode="latest", category=None)
+            if not fetch_ok:
+                log("    [Head] Page 1 blocked/unavailable; head check skipped.")
+            elif not p1_items:
+                log("    [Head] Page 1: empty response from MMSVibeX")
+            else:
+                ingest(p1_items, "Page 1")
+
+        state = load_mms_checkpoint() or {"current_page": 1, "max_pages": 221, "completed": False}
+        if state.get("completed"):
             log("    [✓] Viral MMS catalog is 100% indexed (backfill complete).")
         else:
-            curr_cursor = mms_state.get("current_page", 1)
-            max_pages = mms_state.get("max_pages", 221)
-            if curr_cursor <= max_pages:
-                log(f"  [*] Viral MMS Progress Tracing: Crawling historical page {curr_cursor} of {max_pages}...")
-                hist_items = scrape_mms_listing(curr_cursor, filter_mode="latest", category=None)
-                if hist_items:
-                    new_hist = [itm for itm in hist_items if str(itm.get("post_id")) not in VIRAL_MMS_KNOWN_IDS]
-                    if new_hist:
-                        log(f"    [+] Historical Page {curr_cursor}: Found {len(new_hist)} unindexed videos! Ingesting...")
-                        polished_batch = [polish_scraped_record(itm) for itm in new_hist]
-                        res = upsert_scraped_videos_batch(polished_batch)
-                        for itm in new_hist:
-                            VIRAL_MMS_KNOWN_IDS.add(str(itm.get("post_id")))
-                        total_ingested += len(polished_batch)
-                        log(f"    [✓] Historical Page {curr_cursor}: Ingested {len(polished_batch)} videos")
+            cursor = int(state.get("current_page", 1) or 1)
+            max_pages = int(state.get("max_pages", 221) or 221)
+            if cursor <= max_pages:
+                log(f"  [*] Viral MMS Progress Tracing: crawling historical page {cursor} of {max_pages}...")
+                hist_items, fetch_ok = scrape_mms(cursor, filter_mode="latest", category=None)
+                if not fetch_ok:
+                    log(f"    [!] Historical page {cursor} blocked/timed out. Cursor stays on {cursor}.")
+                elif not hist_items:
+                    log(f"    [!] Historical page {cursor} is empty. Treating as end of catalog.")
+                    state["current_page"] = cursor + 1
+                    state["completed"] = True
+                    if save_mms_checkpoint(state):
+                        log("  [✓] Viral MMS backfill marked complete.")
+                elif ingest(hist_items, f"Historical page {cursor}"):
+                    state["current_page"] = cursor + 1
+                    state["total_ingested"] = int(state.get("total_ingested", 0) or 0) + int(
+                        sum(1 for itm in hist_items if str(itm.get("post_id")) in VIRAL_MMS_KNOWN_IDS)
+                    )
+                    if state["current_page"] > max_pages:
+                        state["completed"] = True
+                        log(f"  [✓] Viral MMS Historical Backfill: complete ({max_pages} pages).")
+                    if save_mms_checkpoint(state):
+                        log(f"  [✓] Viral MMS Checkpoint: cursor advanced to page {state['current_page']}")
                     else:
-                        log(f"    Historical Page {curr_cursor}: All {len(hist_items)} releases already indexed.")
-
-                    for itm in hist_items:
-                        VIRAL_MMS_KNOWN_IDS.add(str(itm.get("post_id")))
-                    save_mms_known_ids(VIRAL_MMS_KNOWN_IDS)
-
-                    mms_state["current_page"] = curr_cursor + 1
-                    mms_state["total_ingested"] = mms_state.get("total_ingested", 0) + total_ingested
-                    if mms_state["current_page"] > max_pages:
-                        mms_state["completed"] = True
-                        log(f"  [✓] Viral MMS Historical Backfill: Complete! All {max_pages} pages indexed.")
-                    if save_mms_checkpoint:
-                        save_mms_checkpoint(mms_state)
-                    log(f"  [✓] Viral MMS Checkpoint: Cursor advanced to page {curr_cursor + 1}")
+                        log("  [!] Viral MMS checkpoint was only cached locally; remote sync must retry.")
                 else:
-                    log(f"    [!] Historical Page {curr_cursor} returned 0 items. Advancing cursor.")
-                    mms_state["current_page"] = curr_cursor + 1
-                    if mms_state["current_page"] > max_pages:
-                        mms_state["completed"] = True
-                    if save_mms_checkpoint:
-                        save_mms_checkpoint(mms_state)
+                    log(f"    [!] Cursor stays on page {cursor} until the batch succeeds.")
 
+        FEED_STATUS["viral-mms"] = "completed"
         log(f"  [✓] Viral MMS sync complete. New videos added: {total_ingested}")
         return total_ingested
     except Exception as e:
+        FEED_STATUS["viral-mms"] = "failed"
         log(f"  [!] Viral MMS sync error: {e}")
-        return 0
+        return total_ingested
+
 
 # ─── Japanese JAV Ingestion Task ─────────────────────────────────────────────
 
 def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int = 3, checkpoint: Optional[Dict[str, Any]] = None) -> int:
-    """Runs SupJav ingestion: checks Page 1 when requested, then advances historical backfill cursors."""
+    """Runs SupJav ingestion and only advances cursors after confirmed writes."""
     global JAV_KNOWN_IDS
     log("\n" + "=" * 65)
-    log(f"  [FEED 2/3] SupJav Japanese JAV Scraper | Working Mirrors Only")
+    log("  [FEED 2/5] SupJav Japanese JAV Scraper | Working Mirrors Only")
     log("=" * 65)
 
     if not checkpoint:
         checkpoint = load_japanese_checkpoint()
-    session = create_japanese_session()
-    warm_up_japanese_session(session)
-    new_ingested = 0
 
-    for cat in JAV_CATEGORIES:
-        log(f"\n  Checking category: [{cat}]")
+    feed_counts: Dict[str, int] = {}
+
+    def run_feed(key: str, fn, **kwargs) -> int:
         try:
-            # 1. Check Page 1 for brand new releases (only on scheduled head checks)
-            if check_head:
-                p1_items = scrape_japanese_listing(session, page_num=1, category=cat)
-                if p1_items:
-                    new_p1 = [itm for itm in p1_items if str(itm["source_post_id"]) not in JAV_KNOWN_IDS]
-                    if new_p1:
-                        log(f"    [+] Page 1: Found {len(new_p1)} brand new releases! Resolving mirrors...")
-                        enriched = enrich_japanese_items(new_p1, max_workers=workers)
-                        if enriched:
-                            records = []
-                            for itm in enriched:
-                                srvs = [s["name"] for s in itm.get("servers", [])]
-                                log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
-                                polished = polish_supjav_record(itm)
-                                records.append(polished)
-                            res = upsert_japanese_videos_batch(records)
-                            log(f"      [✓] Batch upserted {len(records)} videos ({res})")
-                            new_ingested += len(records)
-                            
-                        # Add ALL evaluated items to JAV_KNOWN_IDS to prevent redundant re-evaluations
-                        for itm in new_p1:
-                            JAV_KNOWN_IDS.add(str(itm["source_post_id"]))
-                        save_japanese_known_ids(JAV_KNOWN_IDS)
-                    else:
-                        log(f"    [Head] Page 1: Up to date (all {len(p1_items)} releases already indexed)")
-
-            # 2. Advance historical backfill cursor
-            if "categories" not in checkpoint:
-                checkpoint["categories"] = {}
-            cat_state = checkpoint["categories"].setdefault(cat, {"current_page": 2, "max_pages": 100, "completed": False})
-            curr_cursor = cat_state.get("current_page", 2)
-            if curr_cursor <= 1:
-                curr_cursor = 2
-                cat_state["current_page"] = 2
-
-            if curr_cursor > cat_state.get("max_pages", 99999):
-                cat_state["completed"] = True
-                save_japanese_checkpoint(checkpoint)
-                log(f"    [✓] Category [{cat}] has completed all available pages.")
-
-            if not cat_state.get("completed", False):
-                log(f"    [*] Progress Tracing: Crawling historical page {curr_cursor} for [{cat}]...")
-                hist_items = scrape_japanese_listing(session, page_num=curr_cursor, category=cat)
-                if hist_items:
-                    new_hist = [itm for itm in hist_items if str(itm["source_post_id"]) not in JAV_KNOWN_IDS]
-                    if new_hist:
-                        log(f"    [+] Historical Page {curr_cursor}: Found {len(new_hist)} unindexed videos! Resolving mirrors...")
-                        enriched_hist = enrich_japanese_items(new_hist, max_workers=workers)
-                        if enriched_hist:
-                            records = []
-                            for itm in enriched_hist:
-                                srvs = [s["name"] for s in itm.get("servers", [])]
-                                log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
-                                polished = polish_supjav_record(itm)
-                                records.append(polished)
-                            res = upsert_japanese_videos_batch(records)
-                            log(f"      [✓] Batch upserted {len(records)} videos ({res})")
-                            new_ingested += len(records)
-                        
-                        # CRITICAL DEDUP FIX: Add ALL evaluated items to JAV_KNOWN_IDS so cross-listed videos with dead/unsupported hosts are never re-scraped
-                        for itm in new_hist:
-                            JAV_KNOWN_IDS.add(str(itm["source_post_id"]))
-                        save_japanese_known_ids(JAV_KNOWN_IDS)
-                    else:
-                        log(f"    Historical Page {curr_cursor}: All {len(hist_items)} releases already indexed.")
-
-                    # Advance cursor
-                    cat_state["current_page"] = curr_cursor + 1
-                    save_japanese_checkpoint(checkpoint)
-                    log(f"    [✓] Progress saved: [{cat}] cursor advanced to page {curr_cursor + 1}")
-                elif hist_items is not None and len(hist_items) == 0:
-                    cat_state["completed"] = True
-                    save_japanese_checkpoint(checkpoint)
-                    log(f"    [✓] Reached end of category [{cat}]. Marked completed in checkpoint.")
-                elif hist_items is None:
-                    log(f"    [!] Skipping cursor advance for [{cat}] due to Cloudflare block.")
-
+            count = int(fn(**kwargs) or 0)
+            feed_counts[key] = count
+            FEED_STATUS.setdefault(key, "completed")
+            return count
         except Exception as e:
-            log(f"    [!] Error checking {cat}: {e}")
-
-        human_jitter(1.0, 2.0)
-
-    log(f"\n  [✓] Japanese JAV sync complete. New videos added: {new_ingested}")
-    return new_ingested
-
-# ─── Myanmar (Buu Mal) Ingestion Task ────────────────────────────────────────
-
-def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
-    """Runs Buu Mal (Myanmar) ingestion: optionally checks Page 1, then advances cursor in Supabase."""
-    global MYANMAR_KNOWN_IDS
-    log("\n" + "=" * 65)
-    log(f"  [FEED 3/3] Buu Mal Myanmar Scraper | Isolated Schema")
-    log("=" * 65)
-    try:
-        from scraper.categories.myanmar.pipeline import (
-            scrape_page,
-            load_checkpoint as load_myanmar_checkpoint,
-            save_checkpoint as save_myanmar_checkpoint,
-            save_known_ids as save_myanmar_known_ids
-        )
-        from scraper.db import upsert_myanmar_videos_batch, get_scraper_checkpoint, set_scraper_checkpoint
-
-        myanmar_state = get_scraper_checkpoint("myanmar")
-        if not myanmar_state or "current_page" not in myanmar_state:
-            local_cp = load_myanmar_checkpoint()
-            start_p = local_cp.get("current_page", local_cp.get("last_page", 34))
-            myanmar_state = {
-                "current_page": max(start_p, 34),
-                "max_pages": 3690,
-                "total_ingested": len(MYANMAR_KNOWN_IDS)
-            }
-
-        curr_page = myanmar_state.get("current_page", 34)
-        ingested = 0
-
-        # 1. Scrape Page 1 (site-wide latest) for brand new releases (only on scheduled head checks)
-        if check_head:
-            p1_records = scrape_page(1, tag="", known_ids=MYANMAR_KNOWN_IDS, workers=workers)
-            if p1_records:
-                upsert_myanmar_videos_batch(p1_records)
-                for r in p1_records:
-                    MYANMAR_KNOWN_IDS.add(str(r["source_post_id"]))
-                save_myanmar_known_ids(MYANMAR_KNOWN_IDS)
-                ingested += len(p1_records)
-                log(f"    [✓] Page 1: Ingested {len(p1_records)} new Buu Mal releases")
-            else:
-                log("    [Head] Page 1: Up to date (all releases already indexed)")
-
-        # 2. Advance historical backfill cursor (site-wide catalog)
-        max_pages = myanmar_state.get("max_pages", 3690)
-        if curr_page <= max_pages:
-            log(f"    [*] Myanmar Historical Cursor: Crawling page {curr_page} of {max_pages}...")
-            cursor_records = scrape_page(curr_page, tag="", known_ids=MYANMAR_KNOWN_IDS, workers=workers)
-            if cursor_records:
-                upsert_myanmar_videos_batch(cursor_records)
-                for r in cursor_records:
-                    MYANMAR_KNOWN_IDS.add(str(r["source_post_id"]))
-                save_myanmar_known_ids(MYANMAR_KNOWN_IDS)
-                ingested += len(cursor_records)
-                log(f"    [✓] Historical Page {curr_page}: Ingested {len(cursor_records)} videos")
-            else:
-                log(f"    Historical Page {curr_page}: All releases already indexed (or page empty).")
-
-            myanmar_state["current_page"] = curr_page + 1
-            myanmar_state["total_ingested"] = myanmar_state.get("total_ingested", 0) + ingested
-            set_scraper_checkpoint("myanmar", myanmar_state)
-            save_myanmar_checkpoint(myanmar_state)
-            log(f"  [✓] Myanmar Checkpoint: Cursor advanced to page {curr_page + 1} (Saved to Supabase)")
-
-        log(f"  [✓] Myanmar sync complete. Total new videos: {ingested}")
-        return ingested
-    except Exception as e:
-        log(f"  [!] Myanmar sync error: {e}")
-        return 0
-
-# ─── OnlyFans Leaks Ingestion Task ───────────────────────────────────────────
-
-def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
-    """Runs each OnlyFans source independently into its own table."""
-    log("\n" + "=" * 65)
-    log(f"  [FEED 4/4] OnlyFans Leaks Multi-Site Fleet | Per-source isolated")
-    log("=" * 65)
-    try:
-        from scraper.categories.onlyfans.pipeline import (
-            run_site_crawl,
-            load_checkpoints,
-            save_checkpoints,
-            load_known_ids as load_of_known_ids,
-            save_known_ids as save_of_known_ids,
-            SOURCES as OF_SOURCES
-        )
-
-        checkpoints = load_checkpoints()
-        known_ids = load_of_known_ids()
-        total_new = 0
-
-        sites = ["internetchicks", "influencersgonewild", "sheeshfans", "pimpbunny"]
-        for site_key in sites:
-            if site_key not in OF_SOURCES:
-                continue
-
-            site_state = checkpoints.get(site_key, {"current_page": 1, "max_pages": 200})
-            curr_cursor = int(site_state.get("current_page", 1) or 1)
-            max_pages = int(site_state.get("max_pages", 200) or 200)
-
-            # 1. Head check (Page 1) when scheduled
-            if check_head:
-                h_stats = run_site_crawl(
-                    site_key=site_key,
-                    start_page=1,
-                    max_pages=1,
-                    known_ids=known_ids,
-                    dry_run=False,
-                    jitter=0.5,
-                    new_only=True,
-                )
-                total_new += int(h_stats.get("items_new", 0) or 0)
-
-            # 2. Historical backfill cursor
-            if curr_cursor <= max_pages:
-                c_stats = run_site_crawl(
-                    site_key=site_key,
-                    start_page=curr_cursor,
-                    max_pages=pages_per_site,
-                    known_ids=known_ids,
-                    dry_run=False,
-                    jitter=0.8,
-                )
-                total_new += int(c_stats.get("items_new", 0) or 0)
-                # Do not advance past empty/blocked pages or a failed upsert.
-                if not c_stats.get("upsert_failed"):
-                    site_state["current_page"] = curr_cursor + int(c_stats.get("pages_crawled", 0) or 0)
-                detected_max = c_stats.get("detected_max_pages")
-                if isinstance(detected_max, int) and detected_max > 0:
-                    site_state["max_pages"] = max(int(site_state.get("max_pages", 0) or 0), detected_max)
-
-            checkpoints[site_key] = site_state
-            save_of_known_ids(known_ids)
-            save_checkpoints(checkpoints)
-
-        log(f"\n  [OK] OnlyFans per-source sync complete. Records appended: {total_new}")
-        return total_new
-    except Exception as e:
-        log(f"  [!] OnlyFans sync error: {e}")
-        return 0
-
-# ─── Unified Cycle Executor ──────────────────────────────────────────────────
-
-def run_unified_sync_cycle(check_head: bool = True, mms_pages: int = 1, jav_pages: int = 1, of_pages: int = 1, workers: int = 3) -> Dict[str, int]:
-    """Executes a single combined sync cycle across target websites."""
-    t0 = time.time()
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    mode_str = "FULL SYNC (Head + Historical)" if check_head else "FAST BACKFILL (Historical Cursors)"
-    log("\n" + "#" * 65)
-    log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp} | {mode_str}")
-    log("#" * 65)
-
-    # Supabase Health Gate: Wait up to 10m for database & Cloudflare tunnel to be fully online
-    wait_for_supabase(max_wait_seconds=600, poll_interval=15)
-
-    # Initialize in-memory deduplication caches from Supabase
-    init_known_id_caches()
-
-    checkpoint = load_japanese_checkpoint()
+            FEED_STATUS[key] = "failed"
+            feed_counts[key] = 0
+            log(f"  [!] Feed [{key}] failed in isolation: {e}")
+            return 0
 
     # 1. Scrape Viral MMS (Head + Cursor Backfill)
-    mms_count = run_viral_mms_sync(check_head=check_head, pages=mms_pages)
-
-    # Human transition pause
+    mms_count = run_feed("viral-mms", run_viral_mms_sync, check_head=check_head, pages=mms_pages)
     human_jitter(1.5, 2.5)
 
     # 2. Scrape Japanese JAV (Head + Cursor Backfill)
-    jav_count = run_japanese_jav_sync(check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
-
-    # Human transition pause
+    jav_count = run_feed("supjav", run_japanese_jav_sync, check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
     human_jitter(1.5, 2.5)
 
     # 3. Scrape Myanmar (Head + Cursor Backfill)
-    myanmar_count = run_myanmar_sync(check_head=check_head, workers=workers)
-
-    # Human transition pause
+    myanmar_count = run_feed("myanmar", run_myanmar_sync, check_head=check_head, workers=workers)
     human_jitter(1.5, 2.5)
 
-    # 4. Scrape OnlyFans (Head + Cursor Backfill across InternetChicks, InfluencersGoneWild, SheeshFans, PimpBunny)
-    of_count = run_onlyfans_sync(check_head=check_head, pages_per_site=of_pages)
+    # 4. Scrape OnlyFans (Head + Cursor Backfill)
+    of_count = run_feed("onlyfans", run_onlyfans_sync, check_head=check_head, pages_per_site=of_pages)
+
+    # 5. Scrape Voyeur House (5 isolated websites)
+    vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
+
+    failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
+    global_status = "failed" if failed_feeds else "completed"
+    try:
+        from scraper.progress import save_progress as _save_global_progress
+        _save_global_progress("unified", {
+            "status": global_status,
+            "failed_feeds": failed_feeds,
+            "feeds": dict(FEED_STATUS),
+            "counts": feed_counts,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+    except Exception as e:
+        log(f"  [!] Could not persist unified cycle status: {e}")
 
     elapsed = time.time() - t0
     log("\n" + "#" * 65)
-    log(f"  CYCLE SUMMARY | Elapsed: {elapsed:.1f}s")
+    log(f"  CYCLE SUMMARY | Elapsed: {elapsed:.1f}s | Status: {global_status}")
     log(f"  - Viral MMS:    {mms_count} videos processed")
     log(f"  - Japanese JAV: {jav_count} new videos ingested")
     log(f"  - Myanmar:      {myanmar_count} new videos ingested")
     log(f"  - OnlyFans:     {of_count} new videos ingested")
+    log(f"  - Voyeur House: {vh_count} new videos ingested")
+    if failed_feeds:
+        log(f"  - Failed feeds: {', '.join(failed_feeds)}")
     log("#" * 65)
 
-    return {"mms": mms_count, "jav": jav_count, "myanmar": myanmar_count, "onlyfans": of_count}
+    return {
+        "mms": mms_count,
+        "jav": jav_count,
+        "myanmar": myanmar_count,
+        "onlyfans": of_count,
+        "voyeurhouse": vh_count,
+    }
 
 # ─── Continuous 24/7 Session Daemon (For GitHub Actions) ─────────────────────
 
@@ -579,7 +370,7 @@ def run_continuous_daemon(
 
         log(f"\n>>> CYCLE #{cycle} | Session elapsed: {elapsed / 60:.1f}m | Remaining: {remaining / 60:.1f}m <<<")
         try:
-            run_unified_sync_cycle(check_head=check_head, mms_pages=1, jav_pages=1, workers=workers)
+            run_unified_sync_cycle(check_head=check_head, mms_pages=1, jav_pages=1, of_pages=1, vh_pages=1, workers=workers)
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
@@ -607,7 +398,9 @@ if __name__ == "__main__":
     parser.add_argument("--mms-pages", type=int, default=1, help="Pages of Viral MMS to scrape")
     parser.add_argument("--jav-pages", type=int, default=1, help="Pages of Japanese JAV to scrape per category")
     parser.add_argument("--of-pages", type=int, default=1, help="Pages of OnlyFans to scrape per site")
+    parser.add_argument("--vh-pages", type=int, default=1, help="Pages per Voyeur House website to scrape per run")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
+    parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--check-head", action="store_true", default=True, help="Check Page 1 for latest releases")
     args = parser.parse_args()
 
@@ -615,6 +408,9 @@ if __name__ == "__main__":
         wait_for_supabase(max_wait_seconds=600, poll_interval=15)
         init_known_id_caches()
         run_onlyfans_sync(check_head=args.check_head, pages_per_site=args.of_pages)
+    elif args.voyeurhouse:
+        wait_for_supabase(max_wait_seconds=600, poll_interval=15)
+        run_voyeurhouse_sync(check_head=args.check_head, pages_per_site=args.vh_pages)
     elif args.daemon:
         run_continuous_daemon(
             session_minutes=args.session_minutes,
@@ -627,5 +423,6 @@ if __name__ == "__main__":
             mms_pages=args.mms_pages,
             jav_pages=args.jav_pages,
             of_pages=args.of_pages,
+            vh_pages=args.vh_pages,
             workers=args.workers
         )

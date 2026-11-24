@@ -18,7 +18,8 @@ import json
 import time
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -64,67 +65,41 @@ BUUMAL_TAGS = {
 # Cache & Checkpoint Persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_known_ids() -> Set[str]:
-    """Loads cached post IDs: primary Supabase, fallback local JSON."""
-    known_ids: Set[str] = set()
-    if KNOWN_IDS_FILE.exists():
-        try:
-            data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                known_ids.update(str(x) for x in data)
-        except Exception as e:
-            print(f"[!] Warning reading known IDs cache: {e}")
-    try:
-        from scraper.db import get_scraper_known_post_ids
-        sb_ids = get_scraper_known_post_ids("myanmar")
-        if sb_ids:
-            known_ids.update(str(x) for x in sb_ids)
-            save_known_ids(known_ids)
-    except Exception as e:
-        print(f"  [!] Note: Supabase Myanmar ID sync bypassed ({e}).")
-    return known_ids
+DEFAULT_CHECKPOINT = {"current_page": 34, "max_pages": 3690, "total_ingested": 0}
 
-def save_known_ids(known_ids: Set[str]):
-    """Persists updated set of seen post IDs."""
-    try:
-        KNOWN_IDS_FILE.write_text(json.dumps(sorted(list(known_ids)), indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Failed to save known IDs cache: {e}")
+
+def load_known_ids() -> Set[str]:
+    """Loads cached post IDs from Supabase + local JSON (Supabase wins)."""
+    from scraper.progress import load_known_ids as _load
+    ids = _load("myanmar", KNOWN_IDS_FILE)
+    save_known_ids(ids)
+    return ids
+
+
+def save_known_ids(known_ids: Set[str], new_ids: Optional[Set[str]] = None,
+                   status: str = "stored") -> None:
+    """Mirrors IDs locally and records only newly-confirmed IDs remotely."""
+    from scraper.progress import mark_known_ids, save_known_ids as _save
+    if new_ids:
+        mark_known_ids(new_ids, default_site="myanmar", status=status)
+    _save(KNOWN_IDS_FILE, known_ids)
+
 
 def load_checkpoint() -> Dict[str, Any]:
-    """Loads crawler checkpoint state: Supabase-first with local fallback."""
-    try:
-        from scraper.db import get_scraper_checkpoint
-        sb_cp = get_scraper_checkpoint("myanmar")
-        if sb_cp and isinstance(sb_cp, dict) and "current_page" in sb_cp:
-            return sb_cp
-    except Exception:
-        pass
+    """Loads Myanmar checkpoint: Supabase first, atomic local cache second."""
+    from scraper.progress import load_checkpoint as _load
+    state = _load("myanmar", CHECKPOINT_FILE, DEFAULT_CHECKPOINT)
+    if "current_page" not in state and "last_page" in state:
+        state["current_page"] = state["last_page"]
+    return state
 
-    if CHECKPOINT_FILE.exists():
-        try:
-            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
-            if "last_page" in data and "current_page" not in data:
-                data["current_page"] = data["last_page"]
-            return data
-        except Exception:
-            pass
-    return {"current_page": 34, "max_pages": 3690, "total_ingested": 0}
 
-def save_checkpoint(data: Dict[str, Any]):
-    """Saves crawler checkpoint state to Supabase and mirrors to local file."""
-    try:
-        from scraper.db import set_scraper_checkpoint
-        set_scraper_checkpoint("myanmar", data)
-    except Exception as e:
-        print(f"[!] Note: Supabase Myanmar checkpoint sync bypassed ({e}).")
-
-    try:
-        if "current_page" in data and "last_page" not in data:
-            data["last_page"] = data["current_page"]
-        CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Failed to write local checkpoint: {e}")
+def save_checkpoint(data: Dict[str, Any]) -> bool:
+    """Saves Myanmar checkpoint remotely and mirrors it locally."""
+    from scraper.progress import save_checkpoint as _save
+    if "current_page" in data and "last_page" not in data:
+        data["last_page"] = data["current_page"]
+    return _save("myanmar", data, CHECKPOINT_FILE)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP Request Utilities
@@ -194,7 +169,7 @@ def parse_listing_page(html: str) -> List[Dict[str, Any]]:
             continue
             
         # Detail URL
-        detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+        detail_url = urljoin(BASE_URL, href)
         
         # Thumbnail image
         img = col.find("img")
@@ -268,24 +243,28 @@ def enrich_video_detail(item: Dict[str, Any]) -> Dict[str, Any]:
 # Pipeline Execution Flow
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scrape_page(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) -> List[Dict[str, Any]]:
-    """Scrapes, enriches, and polishes a single catalog page."""
+def scrape_page_with_status(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) -> Tuple[List[Dict[str, Any]], bool]:
+    """Scrapes a page and returns ``(polished_records, fetch_ok)``.
+
+    ``fetch_ok=False`` only for request failures; an empty or fully-known
+    catalog page is a successful fetch and may advance the cursor.
+    """
     url = build_listing_url(page_num, tag)
     print(f"[*] Crawling [{tag}] page {page_num}: {url}")
-    
+
     html = make_request(url)
     if not html:
         print(f"[!] Empty response for page {page_num}")
-        return []
+        return [], False
 
     cards = parse_listing_page(html)
     print(f"    Found {len(cards)} cards on page {page_num}")
-    
+
     # Filter unseen IDs
     new_items = [c for c in cards if c["source_post_id"] not in known_ids]
     if not new_items:
         print(f"    All {len(cards)} items already in deduplication cache.")
-        return []
+        return [], True
 
     print(f"    Enriching {len(new_items)} new videos with {workers} workers...")
     enriched_items = []
@@ -309,7 +288,13 @@ def scrape_page(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) 
         except Exception as e:
             print(f"[!] Error polishing record {raw.get('source_post_id')}: {e}")
 
-    return polished
+    return polished, True
+
+
+def scrape_page(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) -> List[Dict[str, Any]]:
+    """Backwards-compatible wrapper: returns polished records only."""
+    return scrape_page_with_status(page_num, tag, known_ids, workers)[0]
+
 
 def run_pipeline(
     tag: str = "myanmar",
@@ -345,16 +330,25 @@ def run_pipeline(
 
         while True:
             try:
-                records = scrape_page(current_page, current_tag, known_ids, workers=workers)
+                records, fetch_ok = scrape_page_with_status(current_page, current_tag, known_ids, workers=workers)
+                if not fetch_ok:
+                    print(f"[!] Page {current_page} fetch failed; stopping tag [{current_tag}] without advancing the cursor.")
+                    break
+
+                new_from_page = 0
                 if records:
                     print(f"[+] Upserting {len(records)} polished records into scraper.myanmar_videos...")
                     resp = upsert_myanmar_videos_batch(records)
                     print(f"    Upsert result: {resp}")
-
-                    for r in records:
-                        known_ids.add(r["source_post_id"])
-                    save_known_ids(known_ids)
-                    total_upserted += len(records)
+                    db_ok = resp is not None and not (isinstance(resp, dict) and resp.get("success") is False)
+                    if not db_ok:
+                        print(f"[!] Upsert failed on page {current_page}; keeping IDs unmarked and stopping this tag.")
+                        break
+                    newly_confirmed = {str(r["source_post_id"]) for r in records}
+                    known_ids.update(newly_confirmed)
+                    save_known_ids(known_ids, new_ids=newly_confirmed)
+                    new_from_page = len(records)
+                    total_upserted += new_from_page
                 else:
                     print(f"[-] No new items to upsert on page {current_page}.")
 
@@ -364,7 +358,7 @@ def run_pipeline(
                 checkpoint[f"last_page_{current_tag}"] = current_page
                 checkpoint["last_page"] = current_page
                 checkpoint["last_tag"] = current_tag
-                checkpoint["total_scraped"] = checkpoint.get("total_scraped", 0) + len(records)
+                checkpoint["total_scraped"] = checkpoint.get("total_scraped", 0) + new_from_page
                 checkpoint["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 save_checkpoint(checkpoint)
 

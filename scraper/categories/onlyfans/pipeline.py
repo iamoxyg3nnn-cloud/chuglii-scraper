@@ -52,75 +52,70 @@ PROGRESS_FILE = CURRENT_DIR / "progress.json"
 # Checkpoint & Cache Persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
+ONLYFANS_SITES = ("internetchicks", "influencersgonewild", "sheeshfans")
+DEFAULT_CHECKPOINTS: Dict[str, Any] = {
+    "internetchicks": {"current_page": 1, "max_pages": 513},
+    "influencersgonewild": {"current_page": 1, "max_pages": 200},
+    "sheeshfans": {"current_page": 1, "max_pages": 200},
+    "total_ingested": 0,
+    "total_merged": 0,
+}
+
+
 def load_checkpoints() -> Dict[str, Any]:
-    """Loads per-site checkpoints: Supabase-first with local fallback."""
-    state = {
-        "internetchicks": {"current_page": 1, "max_pages": 513},
-        "influencersgonewild": {"current_page": 1, "max_pages": 200},
-        "sheeshfans": {"current_page": 1, "max_pages": 200},
-        "pimpbunny": {"current_page": 1, "max_pages": 154},
-        "total_ingested": 0,
-        "total_merged": 0
-    }
-    if CHECKPOINT_FILE.exists():
-        try:
-            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                state.update(data)
-        except Exception:
-            pass
+    """Loads per-site checkpoints from Supabase first and local cache second."""
+    from scraper.progress import load_checkpoint as _load
+    state = _load("onlyfans_multi", CHECKPOINT_FILE, DEFAULT_CHECKPOINTS)
+    for site, defaults in DEFAULT_CHECKPOINTS.items():
+        if isinstance(defaults, dict):
+            state.setdefault(site, dict(defaults))
     return state
 
-def save_checkpoints(state: Dict[str, Any]) -> None:
-    """Saves per-site checkpoints locally and syncs to Supabase."""
-    try:
-        from scraper.db import set_scraper_checkpoint
-        set_scraper_checkpoint("onlyfans_multi", state)
-    except Exception:
-        pass
-    try:
-        state["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        CHECKPOINT_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Warning writing checkpoint file: {e}")
+
+def save_checkpoints(state: Dict[str, Any]) -> bool:
+    """Saves per-site checkpoints remotely and mirrors them locally."""
+    from scraper.progress import save_checkpoint as _save
+    state["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return _save("onlyfans_multi", state, CHECKPOINT_FILE)
+
 
 def load_known_ids() -> Set[str]:
-    """Loads post ID set formatted as site:post_id."""
-    known_ids: Set[str] = set()
-    if KNOWN_IDS_FILE.exists():
-        try:
-            data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                known_ids.update(str(x) for x in data)
-        except Exception:
-            pass
-    return known_ids
+    """Loads ``site:post_id`` keys from local cache plus per-site Supabase ledgers."""
+    from scraper.progress import load_known_ids as _load
+    ids: Set[str] = set()
+    for site in ONLYFANS_SITES:
+        ids.update(_load(site, KNOWN_IDS_FILE, prefix=True, limit=50000))
+    save_known_ids(ids)
+    return ids
 
-def save_known_ids(known_ids: Set[str]) -> None:
-    try:
-        KNOWN_IDS_FILE.write_text(json.dumps(sorted(list(known_ids))), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Warning writing known IDs cache: {e}")
+
+def save_known_ids(
+    known_ids: Set[str],
+    new_ids: Optional[Set[str]] = None,
+    status: str = "stored",
+) -> None:
+    """Mirrors IDs locally and records newly-confirmed IDs in the central ledger."""
+    from scraper.progress import mark_known_ids, save_known_ids as _save
+    if new_ids:
+        mark_known_ids(new_ids, status=status)
+    _save(KNOWN_IDS_FILE, known_ids)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def load_progress() -> Dict[str, Any]:
-    if PROGRESS_FILE.exists():
-        try:
-            return json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+    """Loads per-run OnlyFans progress from Supabase first and local cache second."""
+    from scraper.progress import load_progress as _load
+    return _load("onlyfans_progress", PROGRESS_FILE, {"status": "idle", "sites": {}})
 
 
-def save_progress(progress: Dict[str, Any]) -> None:
-    try:
-        progress["updated_at"] = _now_iso()
-        PROGRESS_FILE.write_text(json.dumps(progress, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Failed to save progress: {e}")
+def save_progress(progress: Dict[str, Any]) -> bool:
+    """Persists per-run progress remotely and mirrors it locally."""
+    from scraper.progress import save_progress as _save
+    progress["updated_at"] = _now_iso()
+    return _save("onlyfans_progress", progress, PROGRESS_FILE)
 
 
 def init_site_progress(progress: Dict[str, Any], site: str, *, start_page: int, end_page: int, mode: str) -> Dict[str, Any]:
@@ -137,6 +132,7 @@ def init_site_progress(progress: Dict[str, Any], site: str, *, start_page: int, 
         "items_new": 0,
         "items_merged": 0,
         "skipped_known": 0,
+        "skipped_unresolved": 0,
         "upserted": 0,
         "errors": 0,
         "last_error": None,
@@ -159,6 +155,7 @@ def finish_site_progress(progress: Dict[str, Any], site: str, stats: Dict[str, A
         "items_new": stats.get("items_new", sp.get("items_new", 0)),
         "items_merged": stats.get("items_merged", sp.get("items_merged", 0)),
         "skipped_known": stats.get("skipped_known", sp.get("skipped_known", 0)),
+        "skipped_unresolved": stats.get("skipped_unresolved", sp.get("skipped_unresolved", 0)),
         "upserted": stats.get("upserted", sp.get("upserted", 0)),
         "errors": stats.get("errors", sp.get("errors", 0)),
         "last_error": stats.get("last_error", sp.get("last_error")),
@@ -173,7 +170,7 @@ def log_progress(site: str, stats: Dict[str, Any], *, page_num: int = None, end_
     print(
         f"{prefix}{page_part} | crawled={stats.get('pages_crawled',0)} found={stats.get('items_found',0)} "
         f"new={stats.get('items_new',0)} merged={stats.get('items_merged',0)} skipped={stats.get('skipped_known',0)} "
-        f"upserted={stats.get('upserted',0)} errors={stats.get('errors',0)}"
+        f"unresolved={stats.get('skipped_unresolved',0)} upserted={stats.get('upserted',0)} errors={stats.get('errors',0)}"
     )
 
 
@@ -233,6 +230,7 @@ def run_site_crawl(
         "detected_max_pages": None,
         "stopped_early": False,
         "upserted": 0,
+        "skipped_unresolved": 0,
         "errors": 0,
         "last_error": None,
     }
@@ -278,6 +276,9 @@ def run_site_crawl(
         # Polish and pass through Cross-Site Deduplicator
         batch_to_upsert = []
         pending_ids = []
+        confirmed_ids: Set[str] = set()
+        seen_ids: Set[str] = set()
+        unresolved_titles: List[str] = []
         for raw in enriched:
             try:
                 # Discard non-video entries (e.g. photo sets or galleries without video streams)
@@ -286,15 +287,21 @@ def run_site_crawl(
                 if not raw_stream and not raw_servers:
                     is_photo_set = raw.get("gallery_url") or any(w in raw.get("title", "").lower() for w in ["photo", "photos", "set", "gallery"])
                     if is_photo_set:
-                        known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
+                        dead_key = f"{site_key}:{raw.get('source_post_id')}"
+                        known_ids.add(dead_key)
+                        seen_ids.add(dead_key)
                         print(f"      [SKIP PHOTO SET] '{raw.get('title')}' is a photo set/gallery. Skipped.")
                     else:
-                        print(f"      [SKIP UNRESOLVED] '{raw.get('title')}' has no stream (enrichment failed or anti-bot gated). Not marked known.")
+                        # Anti-bot/detail failures must stay unmarked for retry, but
+                        # one line per card makes a 32-card page unreadable.
+                        unresolved_titles.append(str(raw.get("title") or "untitled"))
                     continue
 
                 polished = polish_onlyfans_record(raw)
                 if not polished.get("full_video_url") and not (polished.get("raw_payload", {}).get("servers") or polished.get("servers")):
-                    known_ids.add(f"{site_key}:{raw.get('source_post_id')}")
+                    dead_key = f"{site_key}:{raw.get('source_post_id')}"
+                    known_ids.add(dead_key)
+                    seen_ids.add(dead_key)
                     print(f"      [SKIP NON-VIDEO] '{polished.get('title')}' has no valid stream after polish. Skipped.")
                     continue
 
@@ -305,6 +312,16 @@ def run_site_crawl(
             except Exception as e:
                 print(f"[!] Error polishing {site_key} post {raw.get('source_post_id')}: {e}")
 
+        if unresolved_titles:
+            stats["skipped_unresolved"] += len(unresolved_titles)
+            samples = "; ".join(unresolved_titles[:3])
+            if len(unresolved_titles) > 3:
+                samples += f"; +{len(unresolved_titles) - 3} more"
+            print(
+                f"      [SKIP UNRESOLVED] {len(unresolved_titles)} {site_key} posts had no stream "
+                f"(enrichment failed or anti-bot gated). Kept unmarked for retry. Samples: {samples}"
+            )
+
         # Batch upsert to database (per-site isolated). Write to both canonical+per-source table.
         upsert_succeeded = not batch_to_upsert
         if not dry_run and batch_to_upsert:
@@ -314,10 +331,14 @@ def run_site_crawl(
                 deduped_batch_dict[k] = r
             final_batch = list(deduped_batch_dict.values())
             try:
-                from scraper.db import upsert_onlyfans_videos_batch, sync_onlyfans_source_tables_batch
+                from scraper.db import (
+                    rpc_result_succeeded,
+                    sync_onlyfans_source_tables_batch,
+                    upsert_onlyfans_videos_batch,
+                )
                 result = upsert_onlyfans_videos_batch(final_batch)
                 source_result = sync_onlyfans_source_tables_batch(final_batch)
-                canon_ok = not (isinstance(result, dict) and result.get("success") is False)
+                canon_ok = rpc_result_succeeded(result)
                 source_ok = bool(source_result.get("success"))
                 upsert_succeeded = canon_ok and source_ok
                 if canon_ok:
@@ -339,11 +360,17 @@ def run_site_crawl(
         # never existing in the database.
         if dry_run:
             pass  # never poison the known-ID cache during a dry run
-        elif upsert_succeeded:
-            known_ids.update(pending_ids)
         else:
-            stats["upsert_failed"] = True
-            print(f"[!] Keeping {len(pending_ids)} {site_key} IDs unmarked for retry after failed upsert.")
+            if seen_ids:
+                known_ids.update(seen_ids)
+                save_known_ids(known_ids, new_ids=seen_ids, status="seen")
+            if upsert_succeeded:
+                confirmed_ids.update(pending_ids)
+                known_ids.update(confirmed_ids)
+                save_known_ids(known_ids, new_ids=confirmed_ids, status="stored")
+            elif pending_ids:
+                stats["upsert_failed"] = True
+                print(f"[!] Keeping {len(pending_ids)} {site_key} IDs unmarked for retry after failed upsert.")
 
         save_known_ids(known_ids)
         if progress is not None:
@@ -356,6 +383,7 @@ def run_site_crawl(
                 "items_new": stats.get("items_new", 0),
                 "items_merged": stats.get("items_merged", 0),
                 "skipped_known": stats.get("skipped_known", 0),
+                "skipped_unresolved": stats.get("skipped_unresolved", 0),
                 "upserted": stats.get("upserted", 0),
                 "errors": stats.get("errors", 0),
                 "last_error": stats.get("last_error"),
@@ -393,46 +421,64 @@ def run_unified_pipeline(
     # Cross-site deduplication/merge intentionally disabled: isolate data per site.
     export_cache_file = CURRENT_DIR / "onlyfans_canonical_cache.json"
 
-    total_stats = {"items_found": 0, "items_new": 0, "items_merged": 0, "skipped_known": 0}
+    total_stats = {
+        "items_found": 0,
+        "items_new": 0,
+        "items_merged": 0,
+        "skipped_known": 0,
+        "upserted": 0,
+        "errors": 0,
+    }
+    failed_sites: List[str] = []
 
     for site in sites:
-        site_cp = checkpoints.setdefault(site, {"current_page": 1, "max_pages": 500})
-        start_p = 1 if full_site else int(site_cp.get("current_page", 1) or 1)
-        site_max = int(site_cp.get("max_pages") or 500)
-        effective_pages = max(1, site_max - start_p + 1) if full_site else pages_per_site
-        res = run_site_crawl(
-            site_key=site,
-            start_page=start_p,
-            max_pages=effective_pages,
-            known_ids=known_ids,
-            dry_run=dry_run,
-            jitter=jitter,
-            new_only=new_only,
-            progress=progress,
-        )
-        for k in total_stats:
-            if k in res:
-                total_stats[k] += res.get(k, 0)
-        detected_max = res.get("detected_max_pages")
-        if isinstance(detected_max, int) and detected_max > 0:
-            site_cp["max_pages"] = max(int(site_cp.get("max_pages", 0) or 0), detected_max)
-        if not res.get("upsert_failed"):
-            crawled = int(res.get("pages_crawled", 0) or 0)
-            if full_site:
-                site_cp["last_full_crawl_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                # Keep cursor; full backfill should not force normal incremental mode to restart oddly.
+        try:
+            site_cp = checkpoints.setdefault(site, {"current_page": 1, "max_pages": 500})
+            start_p = 1 if full_site else int(site_cp.get("current_page", 1) or 1)
+            site_max = int(site_cp.get("max_pages") or 500)
+            effective_pages = max(1, site_max - start_p + 1) if full_site else pages_per_site
+            res = run_site_crawl(
+                site_key=site,
+                start_page=start_p,
+                max_pages=effective_pages,
+                known_ids=known_ids,
+                dry_run=dry_run,
+                jitter=jitter,
+                new_only=new_only,
+                progress=progress,
+            )
+            for k in total_stats:
+                if k in res:
+                    total_stats[k] += int(res.get(k, 0) or 0)
+            detected_max = res.get("detected_max_pages")
+            if isinstance(detected_max, int) and detected_max > 0:
+                site_cp["max_pages"] = max(int(site_cp.get("max_pages", 0) or 0), detected_max)
+            if not res.get("upsert_failed"):
+                crawled = int(res.get("pages_crawled", 0) or 0)
+                if full_site:
+                    site_cp["last_full_crawl_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                else:
+                    site_cp["current_page"] = start_p + crawled
             else:
-                site_cp["current_page"] = start_p + crawled
-        checkpoints[site] = site_cp
+                failed_sites.append(site)
+            checkpoint_state = progress.setdefault("sites", {}).setdefault(site, {})
+            checkpoint_state["status"] = "failed" if res.get("upsert_failed") else "completed"
+        except Exception as exc:
+            failed_sites.append(site)
+            progress.setdefault("sites", {}).setdefault(site, {})["status"] = "failed"
+            progress["sites"][site]["last_error"] = str(exc)
+            print(f"[!] OnlyFans site [{site}] failed in isolation: {exc}")
+        save_checkpoints(checkpoints)
+        save_progress(progress)
 
-    checkpoints["total_ingested"] = int(checkpoints.get("total_ingested", 0) or 0) + total_stats.get("items_new", 0)
+    # Count confirmed canonical writes, not candidates that may never have been stored.
+    checkpoints["total_ingested"] = int(checkpoints.get("total_ingested", 0) or 0) + int(total_stats.get("upserted", 0) or 0)
     checkpoints["total_merged"] = total_stats["items_merged"]
     save_checkpoints(checkpoints)
 
     # Per-site isolation mode: no cross-site canonical merge cache is written.
-
-
-    progress["status"] = "completed"
+    from scraper.progress import finalize_status
+    finalize_status(progress, failed_sites)
     progress["finished_at"] = _now_iso()
     progress["totals"] = {**total_stats, "canonical_total": None}
     save_progress(progress)
@@ -443,13 +489,13 @@ def run_unified_pipeline(
     print(f"Unique new videos      : {total_stats['items_new']}")
     print(f"Duplicates merged      : {total_stats['items_merged']}")
     print(f"Known items skipped    : {total_stats['skipped_known']}")
-    print(f"Items upserted         : {total_stats.get('items_new',0)} (per-site isolated)")
+    print(f"Items upserted         : {total_stats.get('upserted',0)} (per-site isolated)")
     print(f"Progress file          : {PROGRESS_FILE}")
     print("=" * 60 + "\n")
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-Site OnlyFans Scraper & Deduplication Pipeline")
-    parser.add_argument("--site", choices=["all", "internetchicks", "influencersgonewild", "sheeshfans", "pimpbunny"], default="all",
+    parser.add_argument("--site", choices=["all", "internetchicks", "influencersgonewild", "sheeshfans"], default="all",
                         help="Target site to crawl (default: all)")
     parser.add_argument("--pages", type=int, default=2, help="Number of pages per site (default: 2)")
     parser.add_argument("--full-site", action="store_true", help="Crawl from page 1 to detected max pages for each selected site")
@@ -461,7 +507,7 @@ def main():
 
     args = parser.parse_args()
 
-    target_sites = ["internetchicks", "influencersgonewild", "sheeshfans", "pimpbunny"] if args.site == "all" else [args.site]
+    target_sites = ["internetchicks", "influencersgonewild", "sheeshfans"] if args.site == "all" else [args.site]
 
     if args.daemon:
         print("[*] Starting continuous 24/7 cross-site watcher daemon...")

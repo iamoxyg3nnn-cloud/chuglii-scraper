@@ -12,7 +12,7 @@ import time
 import json
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
@@ -35,66 +35,46 @@ PARENT_CATEGORY = "viral-mms"
 KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
 CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
 
+DEFAULT_CHECKPOINT = {
+    "current_page": 1,
+    "max_pages": 221,
+    "completed": False,
+    "total_ingested": 0,
+}
+
+
 def load_checkpoint() -> Dict[str, Any]:
-    """Loads Viral MMS crawler checkpoint state: Supabase-first with local fallback."""
-    try:
-        from scraper.db import get_scraper_checkpoint
-        sb_cp = get_scraper_checkpoint("viral-mms")
-        if sb_cp and isinstance(sb_cp, dict) and "current_page" in sb_cp:
-            return sb_cp
-    except Exception:
-        pass
+    """Loads Viral MMS checkpoint: Supabase first, atomic local cache second.
 
-    if CHECKPOINT_FILE.exists():
-        try:
-            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
-            return data
-        except Exception:
-            pass
-    return {"current_page": 221, "max_pages": 221, "completed": True, "total_ingested": 9236}
+    A brand-new runner must never assume the backfill is finished, so the
+    fallback defaults to an *incomplete* cursor.
+    """
+    from scraper.progress import load_checkpoint as _load
+    return _load("viral-mms", CHECKPOINT_FILE, DEFAULT_CHECKPOINT)
 
-def save_checkpoint(data: Dict[str, Any]) -> None:
-    """Saves Viral MMS crawler checkpoint state to Supabase and mirrors to local file."""
-    try:
-        from scraper.db import set_scraper_checkpoint
-        set_scraper_checkpoint("viral-mms", data)
-    except Exception as e:
-        print(f"[!] Note: Supabase Viral MMS checkpoint sync bypassed ({e}).")
 
-    try:
-        data["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Failed to write local checkpoint: {e}")
+def save_checkpoint(data: Dict[str, Any]) -> bool:
+    """Saves Viral MMS checkpoint remotely and mirrors it locally."""
+    from scraper.progress import save_checkpoint as _save
+    data["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return _save("viral-mms", data, CHECKPOINT_FILE)
+
 
 def load_known_ids() -> Set[str]:
-    """Loads cached post IDs: primary Supabase, fallback local JSON."""
-    known_ids: Set[str] = set()
-    if KNOWN_IDS_FILE.exists():
-        try:
-            data = json.loads(KNOWN_IDS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                known_ids.update(str(x) for x in data)
-        except Exception:
-            pass
+    """Loads cached post IDs from Supabase + local JSON (Supabase wins)."""
+    from scraper.progress import load_known_ids as _load
+    ids = _load("viral-mms", KNOWN_IDS_FILE)
+    save_known_ids(ids)
+    return ids
 
-    try:
-        from scraper.db import get_scraper_known_post_ids
-        sb_ids = get_scraper_known_post_ids("viral-mms")
-        if sb_ids:
-            known_ids.update(str(x) for x in sb_ids)
-            save_known_ids(known_ids)
-    except Exception as e:
-        print(f"  [!] Note: Supabase MMS ID sync bypassed ({e}).")
 
-    return known_ids
-
-def save_known_ids(known_ids: Set[str]) -> None:
-    """Saves set of known post IDs to local cache."""
-    try:
-        KNOWN_IDS_FILE.write_text(json.dumps(sorted(list(known_ids))), encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Failed to save MMS known IDs cache: {e}")
+def save_known_ids(known_ids: Set[str], new_ids: Optional[Set[str]] = None,
+                   status: str = "stored") -> None:
+    """Mirrors IDs locally and records only the newly-confirmed ones remotely."""
+    from scraper.progress import mark_known_ids, save_known_ids as _save
+    if new_ids:
+        mark_known_ids(new_ids, default_site="viral-mms", status=status)
+    _save(KNOWN_IDS_FILE, known_ids)
 
 def derive_full_video_url(trailer_url: Optional[str], post_id: Optional[str] = None) -> Optional[str]:
     """Derives direct CDN processed MP4 stream URL from trailer preview or post_id."""
@@ -118,8 +98,8 @@ def build_target_url(page_num: int = 1, filter_mode: str = "latest", category: O
             return f"{BASE_URL}/?filter={filter_mode}"
         return f"{BASE_URL}/page/{page_num}/?filter={filter_mode}"
 
-def detect_total_pages(category: Optional[str] = None, filter_mode: str = "latest") -> int:
-    """Detects total pagination count from target URL."""
+def detect_total_pages(category: Optional[str] = None, filter_mode: str = "latest") -> Optional[int]:
+    """Detects total pagination count; returns None when detection fails."""
     try:
         url = build_target_url(1, filter_mode, category)
         res = requests.get(url, impersonate="chrome124", timeout=20)
@@ -133,15 +113,20 @@ def detect_total_pages(category: Optional[str] = None, filter_mode: str = "lates
                     last_page = max(last_page, int(m.group(1)))
         return last_page
     except Exception as e:
-        return 100
+        print(f"[!] Could not detect Viral MMS page count: {e}")
+        return None
 
-def scrape_listing_page(
+def scrape_listing_page_with_status(
     page_num: int = 1,
     filter_mode: str = "latest",
     category: Optional[str] = None,
     max_retries: int = 3
-) -> List[Dict[str, Any]]:
-    """Fetches a listing page and extracts video card data."""
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Fetches a listing page and returns ``(items, fetch_ok)``.
+
+    ``fetch_ok=False`` means the page was blocked or timed out; callers must
+    not advance a cursor.  A 404 is a confirmed end-of-catalog (``True``).
+    """
     url = build_target_url(page_num, filter_mode, category)
 
     for attempt in range(1, max_retries + 1):
@@ -207,14 +192,25 @@ def scrape_listing_page(
                             "actors": actors,
                         }
                     })
-                return items
+                return items, True
             elif res.status_code == 404:
-                return []
+                return [], True
             else:
                 time.sleep(1.5)
         except Exception:
             time.sleep(1.5)
-    return []
+    return [], False
+
+
+def scrape_listing_page(
+    page_num: int = 1,
+    filter_mode: str = "latest",
+    category: Optional[str] = None,
+    max_retries: int = 3
+) -> List[Dict[str, Any]]:
+    """Backwards-compatible wrapper: returns items only."""
+    return scrape_listing_page_with_status(page_num, filter_mode, category, max_retries)[0]
+
 
 def run_scraper_pipeline(
     pages: int = 1,
@@ -234,7 +230,10 @@ def run_scraper_pipeline(
 
     total_upserted = 0
     for p in range(start_page, start_page + pages):
-        items = scrape_listing_page(p, filter_mode=filter_mode, category=category)
+        items, fetch_ok = scrape_listing_page_with_status(p, filter_mode=filter_mode, category=category)
+        if not fetch_ok:
+            print(f"  [!] Page {p} could not be fetched (blocked/timeout). Stopping so the cursor is not advanced.")
+            break
         if not items:
             break
 
@@ -243,19 +242,18 @@ def run_scraper_pipeline(
             print(f"  Page {p}: Up to date (all {len(items)} releases already indexed)")
             continue
 
-        polished_batch = []
-        for itm in new_items:
-            polished = polish_scraped_record(itm)
-            polished_batch.append(polished)
+        polished_batch = [polish_scraped_record(itm) for itm in new_items]
 
         res = upsert_scraped_videos_batch(polished_batch)
-        count = len(polished_batch)
-        total_upserted += count
-        for itm in new_items:
-            known_ids.add(str(itm.get("post_id")))
-        save_known_ids(known_ids)
-        db_status = res.get('success', True) if isinstance(res, dict) else (bool(res) if res is not None else False)
-        print(f"  [✓] Page {p}: Ingested {count} new Viral MMS videos (DB status: {db_status})")
+        db_ok = res is not None and not (isinstance(res, dict) and res.get("success") is False)
+        if db_ok:
+            newly_confirmed = {str(itm.get("post_id")) for itm in new_items}
+            known_ids.update(newly_confirmed)
+            save_known_ids(known_ids, new_ids=newly_confirmed, status="stored")
+            total_upserted += len(polished_batch)
+            print(f"  [✓] Page {p}: Ingested {len(polished_batch)} new Viral MMS videos")
+        else:
+            print(f"  [!] Page {p}: upsert failed ({res}); keeping {len(new_items)} IDs unmarked for retry")
         time.sleep(0.5)
 
     return total_upserted

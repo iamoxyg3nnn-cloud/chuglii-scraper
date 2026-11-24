@@ -220,11 +220,13 @@ def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
                     state["completed"] = True
                     if save_mms_checkpoint(state):
                         log("  [✓] Viral MMS backfill marked complete.")
-                elif ingest(hist_items, f"Historical page {cursor}"):
+                else:
+                    total_before = total_ingested
+                    if not ingest(hist_items, f"Historical page {cursor}"):
+                        log(f"    [!] Cursor stays on page {cursor} until the batch succeeds.")
+                        return total_ingested
                     state["current_page"] = cursor + 1
-                    state["total_ingested"] = int(state.get("total_ingested", 0) or 0) + int(
-                        sum(1 for itm in hist_items if str(itm.get("post_id")) in VIRAL_MMS_KNOWN_IDS)
-                    )
+                    state["total_ingested"] = int(state.get("total_ingested", 0) or 0) + (total_ingested - total_before)
                     if state["current_page"] > max_pages:
                         state["completed"] = True
                         log(f"  [✓] Viral MMS Historical Backfill: complete ({max_pages} pages).")
@@ -232,8 +234,6 @@ def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
                         log(f"  [✓] Viral MMS Checkpoint: cursor advanced to page {state['current_page']}")
                     else:
                         log("  [!] Viral MMS checkpoint was only cached locally; remote sync must retry.")
-                else:
-                    log(f"    [!] Cursor stays on page {cursor} until the batch succeeds.")
 
         FEED_STATUS["viral-mms"] = "completed"
         log(f"  [✓] Viral MMS sync complete. New videos added: {total_ingested}")
@@ -255,7 +255,390 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
 
     if not checkpoint:
         checkpoint = load_japanese_checkpoint()
+    session = create_japanese_session()
+    warm_up_japanese_session(session)
+    new_ingested = 0
+    category_errors: List[str] = []
 
+    def commit(items: List[Dict[str, Any]], label: str) -> bool:
+        nonlocal new_ingested
+        if not items:
+            return True
+        enriched = enrich_japanese_items(items, max_workers=workers)
+        if not enriched:
+            log(f"      [!] {label}: no working mirrors; IDs stay unmarked for retry.")
+            return True
+        records = []
+        confirmed_ids: Set[str] = set()
+        for itm in enriched:
+            srvs = [s["name"] for s in itm.get("servers", [])]
+            log(f"      + #{itm['source_post_id']} {itm['title'][:35]}... -> {srvs}")
+            records.append(polish_supjav_record(itm))
+            confirmed_ids.add(str(itm["source_post_id"]))
+        res = upsert_japanese_videos_batch(records)
+        if not rpc_result_succeeded(res):
+            log(f"      [!] {label}: upsert failed ({res}). Keeping IDs unmarked for retry.")
+            return False
+        JAV_KNOWN_IDS.update(confirmed_ids)
+        save_japanese_known_ids(JAV_KNOWN_IDS, new_ids=confirmed_ids, status="stored")
+        new_ingested += len(records)
+        checkpoint.setdefault("stats", {})["total_ingested"] = int(checkpoint["stats"].get("total_ingested", 0) or 0) + len(records)
+        save_japanese_checkpoint(checkpoint)
+        log(f"      [✓] {label}: batch upserted {len(records)} videos")
+        return True
+
+    for cat in JAV_CATEGORIES:
+        log(f"\n  Checking category: [{cat}]")
+        try:
+            cat_state = checkpoint.setdefault("categories", {}).setdefault(
+                cat, {"current_page": 2, "max_pages": 100, "completed": False}
+            )
+            curr_cursor = max(2, int(cat_state.get("current_page", 2) or 2))
+            cat_state["current_page"] = curr_cursor
+
+            if curr_cursor > int(cat_state.get("max_pages", 99999) or 99999):
+                cat_state["completed"] = True
+                save_japanese_checkpoint(checkpoint)
+                log(f"    [✓] Category [{cat}] has completed all available pages.")
+
+            if check_head and not cat_state.get("completed", False):
+                p1_items = scrape_japanese_listing(session, page_num=1, category=cat)
+                if p1_items is None:
+                    log("    [Head] Page 1 blocked/unavailable; skipping head check.")
+                else:
+                    new_p1 = [itm for itm in p1_items if str(itm["source_post_id"]) not in JAV_KNOWN_IDS]
+                    if new_p1:
+                        log(f"    [+] Page 1: Found {len(new_p1)} brand new releases! Resolving mirrors...")
+                        commit(new_p1, "Head page 1")
+                    else:
+                        log(f"    [Head] Page 1: Up to date (all {len(p1_items)} releases already indexed)")
+
+            if not cat_state.get("completed", False):
+                max_pages = int(cat_state.get("max_pages", 99999) or 99999)
+                if curr_cursor <= max_pages:
+                    log(f"    [*] Progress Tracing: Crawling historical page {curr_cursor} for [{cat}]...")
+                    hist_items = scrape_japanese_listing(session, page_num=curr_cursor, category=cat)
+                    if hist_items is None:
+                        log(f"    [!] Skipping cursor advance for [{cat}] due to Cloudflare block.")
+                    elif not hist_items:
+                        cat_state["completed"] = True
+                        save_japanese_checkpoint(checkpoint)
+                        log(f"    [✓] Reached end of category [{cat}]. Marked completed in checkpoint.")
+                    else:
+                        new_hist = [itm for itm in hist_items if str(itm["source_post_id"]) not in JAV_KNOWN_IDS]
+                        if not new_hist:
+                            log(f"    Historical Page {curr_cursor}: All {len(hist_items)} releases already indexed.")
+                        elif not commit(new_hist, f"Historical page {curr_cursor}"):
+                            log(f"    [!] Cursor stays on page {curr_cursor} until the batch succeeds.")
+                            continue
+                        cat_state["current_page"] = curr_cursor + 1
+                        if cat_state["current_page"] > max_pages:
+                            cat_state["completed"] = True
+                        save_japanese_checkpoint(checkpoint)
+                        log(f"    [✓] Progress saved: [{cat}] cursor advanced to page {cat_state['current_page']}")
+        except Exception as e:
+            category_errors.append(cat)
+            log(f"    [!] Error checking {cat}: {e}")
+
+        human_jitter(1.0, 2.0)
+
+    FEED_STATUS["supjav"] = "failed" if category_errors else "completed"
+    log(f"\n  [✓] Japanese JAV sync complete. New videos added: {new_ingested}")
+    return new_ingested
+
+
+# ─── Myanmar (Buu Mal) Ingestion Task ────────────────────────────────────────
+
+def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
+    """Runs Buu Mal ingestion without advancing on blocked pages or failed writes."""
+    global MYANMAR_KNOWN_IDS
+    log("\n" + "=" * 65)
+    log("  [FEED 3/5] Buu Mal Myanmar Scraper | Isolated Schema")
+    log("=" * 65)
+    try:
+        from scraper.categories.myanmar.pipeline import (
+            scrape_page_with_status,
+            load_checkpoint as load_myanmar_checkpoint,
+            save_checkpoint as save_myanmar_checkpoint,
+            save_known_ids as save_myanmar_known_ids,
+        )
+        from scraper.db import upsert_myanmar_videos_batch, get_scraper_checkpoint, set_scraper_checkpoint
+
+        myanmar_state = get_scraper_checkpoint("myanmar")
+        if not myanmar_state or "current_page" not in myanmar_state:
+            local_cp = load_myanmar_checkpoint()
+            start_p = int(local_cp.get("current_page", local_cp.get("last_page", 34)) or 34)
+            myanmar_state = {
+                "current_page": max(start_p, 34),
+                "max_pages": 3690,
+                "total_ingested": len(MYANMAR_KNOWN_IDS),
+            }
+
+        curr_page = int(myanmar_state.get("current_page", 34) or 34)
+        ingested = 0
+
+        def commit(records: List[Dict[str, Any]], label: str) -> bool:
+            nonlocal ingested
+            if not records:
+                return True
+            result = upsert_myanmar_videos_batch(records)
+            if not rpc_result_succeeded(result):
+                log(f"    [!] {label}: upsert failed ({result}). Keeping IDs unmarked for retry.")
+                return False
+            confirmed = {str(r["source_post_id"]) for r in records}
+            MYANMAR_KNOWN_IDS.update(confirmed)
+            save_myanmar_known_ids(MYANMAR_KNOWN_IDS, new_ids=confirmed, status="stored")
+            delta = len(records)
+            ingested += delta
+            myanmar_state["total_ingested"] = int(myanmar_state.get("total_ingested", 0) or 0) + delta
+            log(f"    [✓] {label}: ingested {delta} new Buu Mal videos")
+            return True
+
+        if check_head:
+            p1_records, fetch_ok = scrape_page_with_status(1, "", MYANMAR_KNOWN_IDS, workers=workers)
+            if not fetch_ok:
+                log("    [Head] Page 1 blocked/unavailable; head check skipped.")
+            elif not p1_records:
+                log("    [Head] Page 1: up to date")
+            else:
+                commit(p1_records, "Page 1")
+
+        max_pages = int(myanmar_state.get("max_pages", 3690) or 3690)
+        if curr_page <= max_pages:
+            log(f"    [*] Myanmar Historical Cursor: Crawling page {curr_page} of {max_pages}...")
+            cursor_records, fetch_ok = scrape_page_with_status(curr_page, "", MYANMAR_KNOWN_IDS, workers=workers)
+            if not fetch_ok:
+                log(f"    [!] Historical page {curr_page} blocked/unavailable. Cursor stays on {curr_page}.")
+                FEED_STATUS["myanmar"] = "failed"
+                return ingested
+            if cursor_records and not commit(cursor_records, f"Historical page {curr_page}"):
+                log(f"    [!] Cursor stays on page {curr_page} until the batch succeeds.")
+                FEED_STATUS["myanmar"] = "failed"
+                return ingested
+            if not cursor_records:
+                log(f"    Historical Page {curr_page}: all releases already indexed (or empty).")
+            myanmar_state["current_page"] = curr_page + 1
+            set_scraper_checkpoint("myanmar", myanmar_state)
+            save_myanmar_checkpoint(myanmar_state)
+            log(f"  [✓] Myanmar Checkpoint: Cursor advanced to page {curr_page + 1} (Saved to Supabase)")
+
+        FEED_STATUS["myanmar"] = "completed"
+        log(f"  [✓] Myanmar sync complete. Total new videos: {ingested}")
+        return ingested
+    except Exception as e:
+        FEED_STATUS["myanmar"] = "failed"
+        log(f"  [!] Myanmar sync error: {e}")
+        return 0
+
+
+# ─── OnlyFans Leaks Ingestion Task ───────────────────────────────────────────
+
+def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
+    """Runs each OnlyFans source independently with remote-first progress state."""
+    log("\n" + "=" * 65)
+    log("  [FEED 4/5] OnlyFans Leaks Multi-Site Fleet | Per-source isolated")
+    log("=" * 65)
+    try:
+        from scraper.categories.onlyfans.pipeline import (
+            run_site_crawl,
+            load_checkpoints,
+            save_checkpoints,
+            load_known_ids as load_of_known_ids,
+            save_known_ids as save_of_known_ids,
+            load_progress as load_of_progress,
+            save_progress as save_of_progress,
+            SOURCES as OF_SOURCES,
+        )
+        from scraper.progress import finalize_status
+
+        checkpoints = load_checkpoints()
+        known_ids = load_of_known_ids()
+        progress = load_of_progress()
+        progress.update({
+            "status": "running",
+            "started_at": progress.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": "head_and_backfill",
+            "sites_requested": ["internetchicks", "influencersgonewild", "sheeshfans"],
+        })
+        save_of_progress(progress)
+
+        total_new = 0
+        failed_sites: List[str] = []
+        sites = ["internetchicks", "influencersgonewild", "sheeshfans"]
+
+        for site_key in sites:
+            if site_key not in OF_SOURCES:
+                continue
+            site_state = checkpoints.setdefault(site_key, {"current_page": 1, "max_pages": 200})
+            try:
+                curr_cursor = int(site_state.get("current_page", 1) or 1)
+                max_pages = int(site_state.get("max_pages", 200) or 200)
+
+                if check_head:
+                    h_stats = run_site_crawl(
+                        site_key=site_key,
+                        start_page=1,
+                        max_pages=1,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.5,
+                        new_only=True,
+                        progress=progress,
+                    )
+                    total_new += int(h_stats.get("upserted", 0) or 0)
+
+                if curr_cursor <= max_pages:
+                    c_stats = run_site_crawl(
+                        site_key=site_key,
+                        start_page=curr_cursor,
+                        max_pages=pages_per_site,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.8,
+                        progress=progress,
+                    )
+                    total_new += int(c_stats.get("upserted", 0) or 0)
+                    if not c_stats.get("upsert_failed"):
+                        crawled = int(c_stats.get("pages_crawled", 0) or 0)
+                        if crawled > 0:
+                            site_state["current_page"] = curr_cursor + crawled
+                    else:
+                        failed_sites.append(site_key)
+                    detected_max = c_stats.get("detected_max_pages")
+                    if isinstance(detected_max, int) and detected_max > 0:
+                        site_state["max_pages"] = max(int(site_state.get("max_pages", 0) or 0), detected_max)
+
+                site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
+                site_progress["status"] = "failed" if site_key in failed_sites else "completed"
+            except Exception as e:
+                failed_sites.append(site_key)
+                site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
+                site_progress["status"] = "failed"
+                site_progress["last_error"] = str(e)
+                log(f"  [!] OnlyFans site [{site_key}] failed in isolation: {e}")
+
+            checkpoints[site_key] = site_state
+            save_of_known_ids(known_ids)
+            save_checkpoints(checkpoints)
+            save_of_progress(progress)
+
+        of_status = finalize_status(progress, failed_sites)
+        FEED_STATUS["onlyfans"] = of_status
+        progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        progress["totals"] = {"upserted": total_new}
+        save_of_progress(progress)
+
+        log(f"\n  [OK] OnlyFans per-source sync complete. Records appended: {total_new}")
+        return total_new
+    except Exception as e:
+        FEED_STATUS["onlyfans"] = "failed"
+        log(f"  [!] OnlyFans sync error: {e}")
+        return 0
+
+
+def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
+    """Runs Voyeur House with per-site remote-first state and isolated failures."""
+    log("\n" + "=" * 65)
+    log("  [FEED 5/5] Voyeur House | 5 isolated websites (voyeur-house.org + reallifecam.to + 3 hotscopes.net)")
+    log("=" * 65)
+    try:
+        from scraper.categories.voyeurhouse import pipeline as vh
+        from scraper.progress import finalize_status
+
+        checkpoints = vh.load_checkpoints()
+        known_ids = vh.load_known_ids()
+        progress = vh.load_progress()
+        progress.update({
+            "status": "running",
+            "started_at": progress.get("started_at") or vh._now_iso(),
+            "mode": "head_and_backfill",
+            "sites_requested": list(vh.SOURCES),
+        })
+        vh.save_progress(progress)
+
+        total_new = 0
+        failed_sites: List[str] = []
+
+        for site_key in vh.SOURCES:
+            state = checkpoints.setdefault(site_key, {
+                "current_page": 1,
+                "max_pages": vh._default_max_pages(site_key),
+            })
+            try:
+                cursor = int(state.get("current_page", 1) or 1)
+                max_pages = int(state.get("max_pages", vh._default_max_pages(site_key)) or vh._default_max_pages(site_key))
+
+                if check_head:
+                    head = vh.run_site_crawl(
+                        site_key, 1, 1, known_ids, jitter=0.5, new_only=True, progress=progress
+                    )
+                    total_new += int(head.get("upserted", 0) or 0)
+
+                if cursor <= max_pages:
+                    stats = vh.run_site_crawl(
+                        site_key, cursor, pages_per_site, known_ids, jitter=0.8, progress=progress
+                    )
+                    total_new += int(stats.get("upserted", 0) or 0)
+                    if not stats.get("upsert_failed"):
+                        crawled = int(stats.get("pages_crawled", 0) or 0)
+                        if crawled > 0:
+                            state["current_page"] = cursor + crawled
+                    else:
+                        failed_sites.append(site_key)
+                    detected = stats.get("detected_max_pages")
+                    if isinstance(detected, int) and detected > 0:
+                        state["max_pages"] = max(int(state.get("max_pages", 0) or 0), detected)
+
+                site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
+                site_progress["status"] = "failed" if site_key in failed_sites else "completed"
+            except Exception as e:
+                failed_sites.append(site_key)
+                site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
+                site_progress["status"] = "failed"
+                site_progress["last_error"] = str(e)
+                log(f"  [!] Voyeur House site [{site_key}] failed in isolation: {e}")
+
+            checkpoints[site_key] = state
+            vh.save_known_ids(known_ids)
+            vh.save_checkpoints(checkpoints)
+            vh.save_progress(progress)
+
+        vh_status = finalize_status(progress, failed_sites)
+        FEED_STATUS["voyeurhouse"] = vh_status
+        progress["finished_at"] = vh._now_iso()
+        progress["totals"] = {"upserted": total_new}
+        vh.save_progress(progress)
+
+        log(f"\n  [OK] Voyeur House sync complete. Records appended: {total_new}")
+        return total_new
+    except Exception as e:
+        FEED_STATUS["voyeurhouse"] = "failed"
+        log(f"  [!] Voyeur House sync error: {e}")
+        return 0
+
+
+# ─── Unified Cycle Executor ──────────────────────────────────────────────────
+
+def run_unified_sync_cycle(
+    check_head: bool = True,
+    mms_pages: int = 1,
+    jav_pages: int = 1,
+    of_pages: int = 1,
+    vh_pages: int = 1,
+    workers: int = 3,
+) -> Dict[str, int]:
+    """Executes a single combined sync cycle across target websites."""
+    t0 = time.time()
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    mode_str = "FULL SYNC (Head + Historical)" if check_head else "FAST BACKFILL (Historical Cursors)"
+    log("\n" + "#" * 65)
+    log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp} | {mode_str}")
+    log("#" * 65)
+
+    wait_for_supabase(max_wait_seconds=600, poll_interval=15)
+    init_known_id_caches()
+
+    checkpoint = load_japanese_checkpoint()
     feed_counts: Dict[str, int] = {}
 
     def run_feed(key: str, fn, **kwargs) -> int:
@@ -270,22 +653,13 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
             log(f"  [!] Feed [{key}] failed in isolation: {e}")
             return 0
 
-    # 1. Scrape Viral MMS (Head + Cursor Backfill)
     mms_count = run_feed("viral-mms", run_viral_mms_sync, check_head=check_head, pages=mms_pages)
     human_jitter(1.5, 2.5)
-
-    # 2. Scrape Japanese JAV (Head + Cursor Backfill)
     jav_count = run_feed("supjav", run_japanese_jav_sync, check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
     human_jitter(1.5, 2.5)
-
-    # 3. Scrape Myanmar (Head + Cursor Backfill)
     myanmar_count = run_feed("myanmar", run_myanmar_sync, check_head=check_head, workers=workers)
     human_jitter(1.5, 2.5)
-
-    # 4. Scrape OnlyFans (Head + Cursor Backfill)
     of_count = run_feed("onlyfans", run_onlyfans_sync, check_head=check_head, pages_per_site=of_pages)
-
-    # 5. Scrape Voyeur House (5 isolated websites)
     vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
@@ -321,6 +695,7 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
         "onlyfans": of_count,
         "voyeurhouse": vh_count,
     }
+
 
 # ─── Continuous 24/7 Session Daemon (For GitHub Actions) ─────────────────────
 

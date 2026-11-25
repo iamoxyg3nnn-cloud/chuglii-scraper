@@ -67,7 +67,10 @@ def fetch_page(url: str, timeout: int = 30, retries: int = 3) -> Optional[Any]:
             if status == 200:
                 return resp
             if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
+                # The site rate-limits aggressively (429 after ~7 rapid hits);
+                # back off hard on 429 so deep crawls do not stall out.
+                wait = 30.0 * (attempt + 1) if status == 429 else 1.5 * (attempt + 1)
+                time.sleep(wait)
                 continue
             last_err = f"HTTP {status}"
             break

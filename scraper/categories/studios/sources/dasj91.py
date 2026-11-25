@@ -64,6 +64,9 @@ _RE_VIDEO_ID = re.compile(r'data-video_id="([^"]+)"')
 _RE_TAG_NAME = re.compile(r'data-video_tag_name="([^"]+)"')
 _RE_META_COVER = re.compile(r'<meta itemprop="image" content="([^"]+)"')
 _RE_META_DATE = re.compile(r'<meta itemprop="datePublished" content="([^"]+)"')
+# Theme pagination bar exposes the exact total: 第 10 / 共 59 页
+_RE_TOTAL_PAGES = re.compile(r'第\s*\d+\s*/\s*共\s*(\d+)\s*页')
+_RE_EXTINF = re.compile(r'#EXTINF:([\d.]+)')
 
 
 def _get_fetcher():
@@ -183,11 +186,16 @@ def scrape_listing(category_id: str, page_num: int) -> Tuple[List[Dict[str, Any]
             "published_at": published,
         })
 
-    # Pagination: highest linked page number in /category/{slug}/{n}/ links.
+    # Pagination: the theme's pagination bar exposes the exact total
+    # (第 N / 共 M 页). Fall back to the highest linked page number.
     detected_max = None
-    pages = [int(p) for p in re.findall(r"/category/%s/(\d+)/" % re.escape(slug), page_html)]
-    if pages:
-        detected_max = max(pages)
+    total_m = _RE_TOTAL_PAGES.search(page_html)
+    if total_m:
+        detected_max = int(total_m.group(1))
+    else:
+        pages = [int(p) for p in re.findall(r"/category/%s/(\d+)/" % re.escape(slug), page_html)]
+        if pages:
+            detected_max = max(pages)
     return items, detected_max
 
 
@@ -214,6 +222,7 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
 
     # Parse every part; keep the ones that carry a video url (fresh token).
     parts = 0
+    first_part_url = ""
     for raw in configs:
         try:
             cfg = json.loads(html_mod.unescape(raw))
@@ -222,10 +231,26 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
         vurl = str((cfg.get("video") or {}).get("url") or "")
         if vurl.strip():
             parts += 1
+            if not first_part_url:
+                first_part_url = vurl
     if parts == 0:
         merged["dead"] = True
         return merged
     merged["parts"] = parts
+
+    # Duration: fetch the first part's playlist and sum its EXTINF values
+    # (one cheap request per new post; tokens are fresh here so it always 200s).
+    try:
+        import urllib.request as _ur
+        req = _ur.Request(first_part_url, headers={"User-Agent": UA})
+        playlist = _ur.urlopen(req, timeout=20).read().decode("utf-8", "replace")
+        total_secs = sum(float(x) for x in _RE_EXTINF.findall(playlist))
+        if total_secs > 0:
+            merged["duration_seconds"] = int(round(total_secs))
+            mins, secs = divmod(int(round(total_secs)), 60)
+            merged["duration_formatted"] = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
+    except Exception as e:
+        print(f"    [dasj91] duration probe failed for {card.get('source_post_id')}: {e}")
 
     # Sentinel instead of a stream URL: resolved fresh at play time.
     merged["full_video_url"] = RESOLVE_SENTINEL

@@ -51,6 +51,53 @@ CATEGORY_URL = f"{BASE_URL}/category/onlyfans/"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TAG_NOISE = {"video", "videos", "photo", "photos", "leak", "leaked", "leaks", "onlyfans"}
 
+# Hosts that are permanently shut down, parked, or return 404/410 across all embeds.
+DEAD_HOST_SUBSTRINGS = (
+    "sbfull.", "sbfast.", "sblongvu.", "sbchill.", "sbbrisk.", "sbthe.",
+    "sbanh.", "sblanh.", "sbspeed.", "sblona.", "sbrapid.", "sbface.",
+    "sbhight.", "sbrity.", "sbsonic.", "likessb.", "lvturbo.",
+    "slwatch.", "sltube.", "slmaxed.", "streamlare.",
+    "fembed.", "upvideo.", "short.ink", "mixdrop.vc",
+)
+
+# Cloudflare-protected hosts that return 403 challenge to non-browser scrapers
+# even when the video is live in a real browser.
+CF_CHALLENGED_HOSTS = (
+    "dood", "d000d", "d0000d", "d0o0d", "dooood", "do0od", "dooodster",
+    "ds2play", "ds2video", "dsvplay", "do7go", "d-s.io", "doply",
+    "myvidplay", "vidply", "vide0", "vvide0", "playmogo",
+)
+
+
+def _is_embed_alive(embed_url: str) -> bool:
+    """Filter out permanently dead hosts and verify checkable embeds (Streamtape/Vidoza/VOE/Filemoon)."""
+    low = embed_url.lower()
+    if any(dead in low for dead in DEAD_HOST_SUBSTRINGS):
+        return False
+    if any(cf in low for cf in CF_CHALLENGED_HOSTS):
+        return True
+    try:
+        import requests as _req
+        r = _req.get(
+            embed_url,
+            timeout=6,
+            allow_redirects=True,
+            headers={"User-Agent": UA, "Referer": BASE_URL + "/"},
+        )
+        if r.status_code in (404, 410):
+            return False
+        body = (r.text or "")[:8000]
+        if "streamtape" in low and ('"fileid":"nofile"' in body or "Video not found!" in body):
+            return False
+        if ("vidoza" in low or "videzz" in low) and ("File was deleted" in body or "404 Not Found" in body):
+            return False
+        if "parklogic" in r.url.lower() or "parklogic" in body.lower():
+            return False
+    except Exception:
+        # Network/ISP block (e.g. Streamtape in India) — do not falsely drop.
+        return True
+    return True
+
 
 def _clean(text: Any) -> str:
     if text is None:
@@ -211,6 +258,8 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
         if not embed_url or embed_url in seen:
             continue
         seen.add(embed_url)
+        if not _is_embed_alive(embed_url):
+            continue
         meta = _server_from_embed(embed_url)
         servers.append({
             **meta,
@@ -223,6 +272,8 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
             embed_url = _abs(m.group(1))
             if embed_url and embed_url not in seen:
                 seen.add(embed_url)
+                if not _is_embed_alive(embed_url):
+                    continue
                 meta = _server_from_embed(embed_url)
                 servers.append({**meta, "embed_url": embed_url, "headers": {"Referer": BASE_URL + "/"}})
 

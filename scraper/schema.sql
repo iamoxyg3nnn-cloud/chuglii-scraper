@@ -326,6 +326,7 @@ AS $$
           )
       )
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
@@ -410,7 +411,7 @@ GRANT EXECUTE ON FUNCTION public.scraper_get_video_by_id(uuid) TO anon, authenti
 -- Get related videos based on matching tags or category
 CREATE OR REPLACE FUNCTION public.scraper_get_related_videos(
     p_video_id uuid,
-    p_limit int DEFAULT 12
+    p_limit int DEFAULT 8
 )
 RETURNS SETOF scraper.videos
 LANGUAGE sql
@@ -419,12 +420,55 @@ SECURITY DEFINER
 SET search_path = scraper, public
 AS $$
     WITH target AS (
-        SELECT tags, categories FROM scraper.videos WHERE id = p_video_id LIMIT 1
+        SELECT
+            tags, categories, actors, source_site,
+            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.videos
+        WHERE id = p_video_id
+        LIMIT 1
+    ),
+    tag_freq AS (
+        SELECT t_tag AS tag, count(*)::numeric AS n
+        FROM scraper.videos v, target t, unnest(t.tags) t_tag
+        WHERE t_tag = ANY (v.tags)
+        GROUP BY t_tag
+    ),
+    category_freq AS (
+        SELECT t_category AS category, count(*)::numeric AS n
+        FROM scraper.videos v, target t, unnest(t.categories) t_category
+        WHERE t_category = ANY (v.categories)
+        GROUP BY t_category
+    ),
+    scored AS (
+        SELECT
+            v AS video,
+            LEAST(12.0,
+                (SELECT coalesce(sum(LEAST(4.0, GREATEST(1.0, 300.0 / f.n))), 0)
+                 FROM unnest(v.tags) x JOIN tag_freq f ON f.tag = x)
+              + (SELECT coalesce(sum(LEAST(3.0, GREATEST(1.0, 150.0 / f.n))), 0)
+                 FROM unnest(v.categories) x JOIN category_freq f ON f.category = x)
+              + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
+              + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
+            ) AS relevance,
+            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.videos v, target t
+        WHERE v.id <> p_video_id
+          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+    ),
+    ranked AS (
+        SELECT s.*,
+               row_number() OVER (
+                   PARTITION BY coalesce(nullif(s.title_key, ''), (s.video).id::text)
+                   ORDER BY s.relevance DESC, (s.video).scraped_at DESC,
+                            (s.video).views_count DESC, (s.video).id DESC
+               ) AS dedupe_rank
+        FROM scored s
     )
-    SELECT v.* FROM scraper.videos v, target t
-    WHERE v.id <> p_video_id
-      AND (v.tags && t.tags OR v.categories && t.categories)
-    ORDER BY v.views_count DESC, v.published_at DESC NULLS LAST
+    SELECT (r.video).*
+    FROM ranked r
+    WHERE r.dedupe_rank = 1
+    ORDER BY r.relevance DESC, (r.video).scraped_at DESC,
+             (r.video).views_count DESC, (r.video).id DESC
     LIMIT p_limit;
 $$;
 
@@ -618,6 +662,7 @@ AS $$
           )
       )
     ORDER BY
+      CASE WHEN p_sort = 'newest' THEN scraped_at END DESC NULLS LAST,
       CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
       CASE WHEN p_sort = 'rating' THEN rating_score END DESC NULLS LAST,
       CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
@@ -704,18 +749,56 @@ STABLE
 SECURITY DEFINER
 SET search_path = scraper, public
 AS $$
-    WITH current_video AS (
-        SELECT tags, categories, actors FROM scraper.japanese_videos WHERE id = p_video_id LIMIT 1
+    WITH target AS (
+        SELECT
+            tags, categories, actors, source_site,
+            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.japanese_videos
+        WHERE id = p_video_id
+        LIMIT 1
+    ),
+    tag_freq AS (
+        SELECT t_tag AS tag, count(*)::numeric AS n
+        FROM scraper.japanese_videos v, target t, unnest(t.tags) t_tag
+        WHERE t_tag = ANY (v.tags)
+        GROUP BY t_tag
+    ),
+    category_freq AS (
+        SELECT t_category AS category, count(*)::numeric AS n
+        FROM scraper.japanese_videos v, target t, unnest(t.categories) t_category
+        WHERE t_category = ANY (v.categories)
+        GROUP BY t_category
+    ),
+    scored AS (
+        SELECT
+            v AS video,
+            LEAST(12.0,
+                (SELECT coalesce(sum(LEAST(4.0, GREATEST(1.0, 300.0 / f.n))), 0)
+                 FROM unnest(v.tags) x JOIN tag_freq f ON f.tag = x)
+              + (SELECT coalesce(sum(LEAST(3.0, GREATEST(1.0, 150.0 / f.n))), 0)
+                 FROM unnest(v.categories) x JOIN category_freq f ON f.category = x)
+              + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
+              + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
+            ) AS relevance,
+            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.japanese_videos v, target t
+        WHERE v.id <> p_video_id
+          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+    ),
+    ranked AS (
+        SELECT s.*,
+               row_number() OVER (
+                   PARTITION BY coalesce(nullif(s.title_key, ''), (s.video).id::text)
+                   ORDER BY s.relevance DESC, (s.video).scraped_at DESC,
+                            (s.video).views_count DESC, (s.video).id DESC
+               ) AS dedupe_rank
+        FROM scored s
     )
-    SELECT jv.*
-    FROM scraper.japanese_videos jv, current_video cv
-    WHERE jv.id <> p_video_id
-      AND (
-        jv.tags && cv.tags
-        OR jv.categories && cv.categories
-        OR jv.actors && cv.actors
-      )
-    ORDER BY jv.published_at DESC NULLS LAST, jv.views_count DESC
+    SELECT (r.video).*
+    FROM ranked r
+    WHERE r.dedupe_rank = 1
+    ORDER BY r.relevance DESC, (r.video).scraped_at DESC,
+             (r.video).views_count DESC, (r.video).id DESC
     LIMIT p_limit;
 $$;
 
@@ -913,6 +996,7 @@ AS $$
       )
       AND status = 'active'
     ORDER BY
+      CASE WHEN p_sort = 'newest' THEN scraped_at END DESC NULLS LAST,
       CASE WHEN p_sort = 'views' THEN views_count END DESC NULLS LAST,
       CASE WHEN p_sort = 'rating' THEN rating_score END DESC NULLS LAST,
       CASE WHEN p_sort = 'longest' THEN duration_seconds END DESC NULLS LAST,
@@ -999,17 +1083,56 @@ STABLE
 SECURITY DEFINER
 SET search_path = scraper, public
 AS $$
-    WITH current_video AS (
-        SELECT tags, categories FROM scraper.myanmar_videos WHERE id = p_video_id LIMIT 1
+    WITH target AS (
+        SELECT
+            tags, categories, actors, source_site,
+            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.myanmar_videos
+        WHERE id = p_video_id
+        LIMIT 1
+    ),
+    tag_freq AS (
+        SELECT t_tag AS tag, count(*)::numeric AS n
+        FROM scraper.myanmar_videos v, target t, unnest(t.tags) t_tag
+        WHERE t_tag = ANY (v.tags)
+        GROUP BY t_tag
+    ),
+    category_freq AS (
+        SELECT t_category AS category, count(*)::numeric AS n
+        FROM scraper.myanmar_videos v, target t, unnest(t.categories) t_category
+        WHERE t_category = ANY (v.categories)
+        GROUP BY t_category
+    ),
+    scored AS (
+        SELECT
+            v AS video,
+            LEAST(12.0,
+                (SELECT coalesce(sum(LEAST(4.0, GREATEST(1.0, 300.0 / f.n))), 0)
+                 FROM unnest(v.tags) x JOIN tag_freq f ON f.tag = x)
+              + (SELECT coalesce(sum(LEAST(3.0, GREATEST(1.0, 150.0 / f.n))), 0)
+                 FROM unnest(v.categories) x JOIN category_freq f ON f.category = x)
+              + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
+              + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
+            ) AS relevance,
+            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+        FROM scraper.myanmar_videos v, target t
+        WHERE v.id <> p_video_id
+          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+    ),
+    ranked AS (
+        SELECT s.*,
+               row_number() OVER (
+                   PARTITION BY coalesce(nullif(s.title_key, ''), (s.video).id::text)
+                   ORDER BY s.relevance DESC, (s.video).scraped_at DESC,
+                            (s.video).views_count DESC, (s.video).id DESC
+               ) AS dedupe_rank
+        FROM scored s
     )
-    SELECT mv.*
-    FROM scraper.myanmar_videos mv, current_video cv
-    WHERE mv.id <> p_video_id
-      AND (
-        mv.tags && cv.tags
-        OR mv.categories && cv.categories
-      )
-    ORDER BY mv.published_at DESC NULLS LAST, mv.views_count DESC
+    SELECT (r.video).*
+    FROM ranked r
+    WHERE r.dedupe_rank = 1
+    ORDER BY r.relevance DESC, (r.video).scraped_at DESC,
+             (r.video).views_count DESC, (r.video).id DESC
     LIMIT p_limit;
 $$;
 
@@ -1200,12 +1323,14 @@ BEGIN
       AND ov.status = 'active'
       AND (ov.full_video_url IS NOT NULL AND ov.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN ov.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN ov.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN ov.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN ov.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN ov.quality_score END DESC NULLS LAST,
         ov.published_at DESC NULLS LAST,
-        ov.scraped_at DESC
+        ov.scraped_at DESC,
+        ov.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -1462,12 +1587,14 @@ BEGIN
       AND vv.status = 'active'
       AND (vv.full_video_url IS NOT NULL AND vv.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN vv.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN vv.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN vv.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN vv.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN vv.quality_score END DESC NULLS LAST,
         vv.published_at DESC NULLS LAST,
-        vv.scraped_at DESC
+        vv.scraped_at DESC,
+        vv.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -1747,12 +1874,14 @@ BEGIN
       AND vv.status = 'active'
       AND (vv.full_video_url IS NOT NULL AND vv.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN vv.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN vv.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN vv.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN vv.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN vv.quality_score END DESC NULLS LAST,
         vv.published_at DESC NULLS LAST,
-        vv.scraped_at DESC
+        vv.scraped_at DESC,
+        vv.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -2021,12 +2150,14 @@ BEGIN
       AND vv.status = 'active'
       AND (vv.full_video_url IS NOT NULL AND vv.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN vv.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN vv.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN vv.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN vv.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN vv.quality_score END DESC NULLS LAST,
         vv.published_at DESC NULLS LAST,
-        vv.scraped_at DESC
+        vv.scraped_at DESC,
+        vv.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -2295,12 +2426,14 @@ BEGIN
       AND vv.status = 'active'
       AND (vv.full_video_url IS NOT NULL AND vv.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN vv.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN vv.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN vv.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN vv.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN vv.quality_score END DESC NULLS LAST,
         vv.published_at DESC NULLS LAST,
-        vv.scraped_at DESC
+        vv.scraped_at DESC,
+        vv.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;
@@ -2569,12 +2702,14 @@ BEGIN
       AND vv.status = 'active'
       AND (vv.full_video_url IS NOT NULL AND vv.full_video_url <> '')
     ORDER BY
+        CASE WHEN p_sort = 'newest' THEN vv.scraped_at END DESC NULLS LAST,
         CASE WHEN p_sort = 'views' THEN vv.views_count END DESC NULLS LAST,
         CASE WHEN p_sort = 'rating' THEN vv.rating_score END DESC NULLS LAST,
         CASE WHEN p_sort = 'oldest' THEN vv.published_at END ASC NULLS LAST,
         CASE WHEN p_sort = 'quality' THEN vv.quality_score END DESC NULLS LAST,
         vv.published_at DESC NULLS LAST,
-        vv.scraped_at DESC
+        vv.scraped_at DESC,
+        vv.id DESC
     LIMIT p_limit
     OFFSET p_offset;
 END;

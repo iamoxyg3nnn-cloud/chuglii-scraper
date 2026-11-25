@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 from scraper.categories.studios.categories import category_info, is_site_enabled
+from scraper.categories.studios.errors import ListingUnavailable
 
 try:
     from scrapling.fetchers import Fetcher
@@ -59,11 +60,13 @@ def is_enabled(category_id: str) -> bool:
 
 
 def fetch_page(url: str, timeout: int = 30, retries: int = 3) -> Optional[Any]:
+    fetch_page.last_status = None
     last_err = None
     for attempt in range(retries):
         try:
             resp = Fetcher.get(url, stealthy_headers=True, timeout=timeout)
             status = getattr(resp, "status", 0)
+            fetch_page.last_status = status
             if status == 200:
                 return resp
             if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
@@ -107,11 +110,16 @@ def scrape_listing(category_id: str, page_num: int) -> Tuple[List[Dict[str, Any]
     url = f"{BASE_URL}/category/{cate}/" if page_num == 1 else f"{BASE_URL}/category/{cate}/{page_num}/"
     resp = fetch_page(url)
     if not resp:
-        return [], None
+        # 404 past the true end of the listing; anything else is transient.
+        if getattr(fetch_page, "last_status", None) == 404:
+            return [], None
+        raise ListingUnavailable(f"HTTP {getattr(fetch_page, 'last_status', 'error')} on {url}")
 
     html = getattr(resp, "html_content", "") or ""
     if len(html) < 5000 or "stui-vodlist" not in html:
-        return [], None
+        if "暂无内容" in html:
+            return [], None  # genuine empty listing (site's own marker)
+        raise ListingUnavailable(f"malformed listing page {url}")
 
     items: List[Dict[str, Any]] = []
     seen_ids = set()

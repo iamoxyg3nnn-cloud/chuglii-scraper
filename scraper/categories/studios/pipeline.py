@@ -32,6 +32,7 @@ try:
         category_info,
     )
     from scraper.categories.studios.polish import polish_studios_record
+    from scraper.categories.studios.errors import ListingUnavailable
     from scraper.categories.studios.translate import (
         save_cache as save_translation_cache,
     )
@@ -40,6 +41,7 @@ except ImportError:
     from categories import ALL_ZONES, category_info  # type: ignore
     from polish import polish_studios_record  # type: ignore
     from translate import save_cache as save_translation_cache  # type: ignore
+    from errors import ListingUnavailable  # type: ignore
 
 CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
 KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
@@ -242,17 +244,38 @@ def run_category_crawl(
     }
     known_page_streak = 0
 
+    aborted = False
     for page_idx in range(max_pages):
         page_num = start_page + page_idx
-        cards, detected_max = source_mod.scrape_listing(category_id, page_num)
+        try:
+            cards, detected_max = source_mod.scrape_listing(category_id, page_num)
+        except ListingUnavailable as e:
+            # Transient failure (rate limit / 5xx / anti-bot): do NOT end the
+            # zone. Leave the cursor on this page and mark it incomplete so
+            # the next run resumes exactly here.
+            print(f"[!] {cat_key} page {page_num} unavailable ({e}); zone left incomplete for retry.")
+            aborted = True
+            stats["errors"] += 1
+            if progress is not None:
+                cp = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cp["last_error"] = f"listing unavailable on page {page_num}: {e}"
+                save_progress(progress)
+            break
         if isinstance(detected_max, int) and detected_max > 0:
             stats["detected_max_pages"] = max(stats.get("detected_max_pages") or 0, detected_max)
 
         if not cards:
-            print(f"[-] No cards found on {cat_key} page {page_num}. Ending category crawl.")
+            # Genuine end of the listing. The site's pagination totals can be
+            # inflated (madouhd advertises 475 pages for a 50-page zone), so
+            # record the TRUE end for the checkpoint.
+            true_max = page_num - 1
+            stats["true_max_pages"] = true_max
+            print(f"[-] No cards on {cat_key} page {page_num}; true end = page {true_max}. Ending category crawl.")
             if progress is not None:
                 cp = progress.setdefault("categories", {}).setdefault(cat_key, {})
-                cp["last_error"] = f"No cards on page {page_num} (possible end/404/anti-bot)"
+                cp["last_error"] = f"end of listing at page {page_num}"
+                if true_max > 0:
+                    cp["max_pages"] = true_max
                 save_progress(progress)
             break
 
@@ -382,7 +405,10 @@ def run_category_crawl(
         time.sleep(jitter)
 
     if progress is not None:
-        status = "failed" if stats["errors"] and not stats["upserted"] else "completed"
+        if aborted:
+            status = "incomplete"
+        else:
+            status = "failed" if stats["errors"] and not stats["upserted"] else "completed"
         finish_category_progress(progress, cat_key, stats, status=status)
 
     return stats
@@ -436,9 +462,16 @@ def run_studios_pipeline(
         total_new += int(s.get("upserted", 0) or 0)
         if not s.get("upsert_failed") and int(s.get("pages_crawled", 0) or 0) > 0:
             cat_state["current_page"] = curr + int(s.get("pages_crawled", 0) or 0)
-        s_max = s.get("detected_max_pages")
-        if isinstance(s_max, int) and s_max > 0:
-            cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), s_max)
+        # A crawl that hit the genuine end of the listing records the TRUE
+        # page count (site pagination bars can be inflated - madouhd shows
+        # 475 pages for a 50-page zone). That value is authoritative.
+        t_max = s.get("true_max_pages")
+        if isinstance(t_max, int) and t_max > 0:
+            cat_state["max_pages"] = t_max
+        else:
+            s_max = s.get("detected_max_pages")
+            if isinstance(s_max, int) and s_max > 0:
+                cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), s_max)
         checkpoints[f"{site_key}:{term}"] = cat_state
         save_known_ids(known_ids)
         save_checkpoints(checkpoints)

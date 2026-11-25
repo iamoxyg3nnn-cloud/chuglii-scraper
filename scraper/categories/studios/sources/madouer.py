@@ -54,8 +54,10 @@ SOURCE_SITE = "madouer"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 # Stream CDN suffixes verified live (200 + #EXTM3U + CORS *). The t{N} number
-# rotates, so match on the domain suffix, never a fixed host.
-_STREAM_HOST_SUFFIXES_OK = ("cdn2020.com",)
+# rotates, so match on the domain suffix, never a fixed host. Unknown hosts
+# (e.g. ptzy's player.putaoplayer.com — NXDOMAIN-dead as of 2026-11-25) get a
+# one-shot live probe instead of being trusted.
+_STREAM_HOST_SUFFIXES_OK = ("cdn2020.com", "97img.com", "thm3u8.co")
 
 _RE_CARD = re.compile(
     r"<a[^>]*class=\"stui-vodlist__thumb[^\"]*\"\s+href=\"(/index\.php/vod/play/id/(\d+)/sid/(\d+)/nid/(\d+)\.html)\""

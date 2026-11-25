@@ -28,7 +28,7 @@ for p in [str(PROJECT_ROOT), str(SCRAPER_DIR), str(CURRENT_DIR), str(SOURCES_DIR
 try:
     from scraper.categories.studios.sources import SOURCES
     from scraper.categories.studios.categories import (
-        DEFAULT_CATEGORIES,
+        ALL_ZONES,
         category_info,
     )
     from scraper.categories.studios.polish import polish_studios_record
@@ -37,7 +37,7 @@ try:
     )
 except ImportError:
     from sources import SOURCES  # type: ignore
-    from categories import DEFAULT_CATEGORIES, category_info  # type: ignore
+    from categories import ALL_ZONES, category_info  # type: ignore
     from polish import polish_studios_record  # type: ignore
     from translate import save_cache as save_translation_cache  # type: ignore
 
@@ -51,8 +51,8 @@ KNOWN_ID_SITE = "studios"
 DEFAULT_CHECKPOINTS: Dict[str, Any] = {
     "total_ingested": 0,
 }
-for _term in DEFAULT_CATEGORIES:
-    DEFAULT_CHECKPOINTS[f"{DEFAULT_SITE_KEY}:{_term}"] = {"current_page": 1, "max_pages": 50}
+for _site, _term in ALL_ZONES:
+    DEFAULT_CHECKPOINTS[f"{_site}:{_term}"] = {"current_page": 1, "max_pages": 50}
 
 
 def _now_iso() -> str:
@@ -66,8 +66,8 @@ def _now_iso() -> str:
 def load_checkpoints() -> Dict[str, Any]:
     from scraper.progress import load_checkpoint as _load
     state = _load("studios_multi", CHECKPOINT_FILE, DEFAULT_CHECKPOINTS)
-    for term in DEFAULT_CATEGORIES:
-        state.setdefault(f"{DEFAULT_SITE_KEY}:{term}", {"current_page": 1, "max_pages": 50})
+    for site, term in ALL_ZONES:
+        state.setdefault(f"{site}:{term}", {"current_page": 1, "max_pages": 50})
     return state
 
 
@@ -398,19 +398,21 @@ def run_studios_pipeline(
         "status": "running",
         "started_at": progress.get("started_at") or _now_iso(),
         "mode": "head_and_backfill",
-        "categories_requested": categories or DEFAULT_CATEGORIES,
+        "categories_requested": categories or [f"{s}:{c}" for s, c in ALL_ZONES],
     })
     save_progress(progress)
 
-    terms = categories or DEFAULT_CATEGORIES
+    terms = categories  # list of "site:category" zone keys, or None for all
+    zones = terms or [f"{site}:{cat}" for site, cat in ALL_ZONES]
     total_new = 0
-    for term in terms:
+    for zone in zones:
+        site_key, term = zone.split(":", 1)
         if not category_info(term):
             continue
-        cat_state = checkpoints.setdefault(f"{DEFAULT_SITE_KEY}:{term}", {"current_page": 1, "max_pages": 50})
+        cat_state = checkpoints.setdefault(f"{site_key}:{term}", {"current_page": 1, "max_pages": 50})
         if check_head:
             h = run_category_crawl(
-                site_key=DEFAULT_SITE_KEY, category_id=term, start_page=1, max_pages=1,
+                site_key=site_key, category_id=term, start_page=1, max_pages=1,
                 known_ids=known_ids, dry_run=dry_run, jitter=0.5, new_only=True, progress=progress,
             )
             total_new += int(h.get("upserted", 0) or 0)
@@ -419,7 +421,7 @@ def run_studios_pipeline(
                 cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), h_max)
         curr = int(cat_state.get("current_page", 1) or 1)
         s = run_category_crawl(
-            site_key=DEFAULT_SITE_KEY, category_id=term, start_page=curr, max_pages=pages_per_category,
+            site_key=site_key, category_id=term, start_page=curr, max_pages=pages_per_category,
             known_ids=known_ids, dry_run=dry_run, jitter=0.8, progress=progress,
         )
         total_new += int(s.get("upserted", 0) or 0)
@@ -428,7 +430,7 @@ def run_studios_pipeline(
         s_max = s.get("detected_max_pages")
         if isinstance(s_max, int) and s_max > 0:
             cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), s_max)
-        checkpoints[f"{DEFAULT_SITE_KEY}:{term}"] = cat_state
+        checkpoints[f"{site_key}:{term}"] = cat_state
         save_known_ids(known_ids)
         save_checkpoints(checkpoints)
         save_progress(progress)

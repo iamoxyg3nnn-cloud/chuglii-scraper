@@ -31,7 +31,13 @@ FLAG_KEY = "deep_backfill"
 TARGETS = {
     "chinese": {"pipeline": "scraper.categories.chinese.pipeline", "site_key": "uxj838238", "label": "Chinese (uxj838238)"},
     "fangsung": {"pipeline": "scraper.categories.fangsung.pipeline", "site_key": "fangsung", "label": "Fangsung (www.fangsung.com)"},
-    "studios": {"pipeline": "scraper.categories.studios.pipeline", "site_key": "madouer", "label": "Studios (madouer.cc)"},
+    "studios": {
+        "pipeline": "scraper.categories.studios.pipeline",
+        "site_key": "madouer",
+        "label": "Studios (madouer + dasj91)",
+        # Multi-site target: explicit zone list (site_key, category) pairs.
+        "zones": "LAZY:studios_zones",
+    },
 }
 
 
@@ -64,14 +70,26 @@ def _load_target(target: str):
     return cfg, mod
 
 
+def _target_zones(target: str, mod) -> List[tuple]:
+    """(site_key, term) pairs for a target. Targets with an explicit 'zones'
+    config (multi-site categories) use it; single-site targets fall back to
+    site_key + DEFAULT_CATEGORIES."""
+    cfg = TARGETS[target]
+    if cfg.get("zones") == "LAZY:studios_zones":
+        from scraper.categories.studios.categories import ALL_ZONES
+        return list(ALL_ZONES)
+    if "zones" in cfg:
+        return [(sk, term) for sk, term in cfg["zones"]]
+    return [(cfg["site_key"], term) for term in mod.DEFAULT_CATEGORIES]
+
+
 def collect_zone_states(target: str) -> List[Dict[str, Any]]:
     """Snapshot of every zone's cursor for one target (no crawling)."""
     _, mod = _load_target(target)
     checkpoints = mod.load_checkpoints()
-    prefix = f"{TARGETS[target]['site_key']}:"
     zones: List[Dict[str, Any]] = []
-    for term in mod.DEFAULT_CATEGORIES:
-        key = f"{prefix}{term}"
+    for site_key, term in _target_zones(target, mod):
+        key = f"{site_key}:{term}"
         state = checkpoints.get(key) or {"current_page": 1, "max_pages": 50}
         cur = int(state.get("current_page", 1) or 1)
         mx = int(state.get("max_pages", 50) or 50)
@@ -124,15 +142,14 @@ def run_deep_backfill(
 
     for target in active_targets:
         cfg, mod = _load_target(target)
-        site_key = cfg["site_key"]
         checkpoints = mod.load_checkpoints()
         known_ids = mod.load_known_ids()
         progress = mod.load_progress()
-        prefix = f"{site_key}:"
-        for term in mod.DEFAULT_CATEGORIES:
-            checkpoints.setdefault(f"{prefix}{term}", {"current_page": 1, "max_pages": 50})
+        zones = _target_zones(target, mod)
+        for zsite, zterm in zones:
+            checkpoints.setdefault(f"{zsite}:{zterm}", {"current_page": 1, "max_pages": 50})
 
-        zone_keys = sorted(k for k in checkpoints if k.startswith(prefix))
+        zone_keys = sorted(f"{sk}:{t}" for sk, t in zones)
         pending = []
         for key in zone_keys:
             state = checkpoints[key]
@@ -148,7 +165,7 @@ def run_deep_backfill(
 
         crawled_pages = 0
         for key in pending:
-            term = key.split(":", 1)[1]
+            zsite, term = key.split(":", 1)
             while time.time() < deadline - min_chunk_seconds:
                 state = checkpoints[key]
                 cur = int(state.get("current_page", 1) or 1)
@@ -159,7 +176,7 @@ def run_deep_backfill(
                 print(f"[DEEP] [{cfg['label']}] {term}: pages {cur}-{cur + chunk - 1} of {mx}")
                 try:
                     stats = mod.run_category_crawl(
-                        site_key=site_key,
+                        site_key=zsite,
                         category_id=term,
                         start_page=cur,
                         max_pages=chunk,

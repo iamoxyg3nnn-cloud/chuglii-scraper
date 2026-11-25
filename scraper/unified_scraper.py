@@ -895,8 +895,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
             save_known_ids as save_st_known_ids,
             load_progress as load_st_progress,
             save_progress as save_st_progress,
-            DEFAULT_SITE_KEY as ST_SITE_KEY,
-            DEFAULT_CATEGORIES as ST_CATEGORIES,
+            ALL_ZONES as ST_ZONES,
         )
         from scraper.categories.studios.categories import category_info as st_category_info
         from scraper.progress import finalize_status
@@ -908,17 +907,17 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
             "status": "running",
             "started_at": progress.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mode": "head_and_backfill",
-            "categories_requested": ST_CATEGORIES,
+            "categories_requested": [f"{sk}:{c}" for sk, c in ST_ZONES],
         })
         save_st_progress(progress)
 
         total_new = 0
         failed_categories: List[str] = []
 
-        for category_id in ST_CATEGORIES:
+        for st_site, category_id in ST_ZONES:
             if not st_category_info(category_id):
                 continue
-            cat_key = f"{ST_SITE_KEY}:{category_id}"
+            cat_key = f"{st_site}:{category_id}"
             cat_state = checkpoints.setdefault(cat_key, {"current_page": 1, "max_pages": 50})
             cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
             try:
@@ -927,7 +926,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
 
                 if check_head:
                     h_stats = run_category_crawl(
-                        site_key=ST_SITE_KEY,
+                        site_key=st_site,
                         category_id=category_id,
                         start_page=1,
                         max_pages=1,
@@ -941,7 +940,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
 
                 if curr_cursor <= max_pages:
                     c_stats = run_category_crawl(
-                        site_key=ST_SITE_KEY,
+                        site_key=st_site,
                         category_id=category_id,
                         start_page=curr_cursor,
                         max_pages=pages_per_category,
@@ -966,7 +965,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                 failed_categories.append(category_id)
                 cat_progress["status"] = "failed"
                 cat_progress["last_error"] = str(e)
-                log(f"  [!] Studios section [{category_id}] failed in isolation: {e}")
+                log(f"  [!] Studios section [{st_site}:{category_id}] failed in isolation: {e}")
 
             checkpoints[cat_key] = cat_state
             save_st_known_ids(known_ids)

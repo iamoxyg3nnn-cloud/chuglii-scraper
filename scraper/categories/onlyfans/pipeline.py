@@ -231,6 +231,7 @@ def run_site_crawl(
         "stopped_early": False,
         "upserted": 0,
         "skipped_unresolved": 0,
+        "first_unresolved_page": None,
         "errors": 0,
         "last_error": None,
     }
@@ -314,6 +315,8 @@ def run_site_crawl(
 
         if unresolved_titles:
             stats["skipped_unresolved"] += len(unresolved_titles)
+            if stats.get("first_unresolved_page") is None:
+                stats["first_unresolved_page"] = page_num
             samples = "; ".join(unresolved_titles[:3])
             if len(unresolved_titles) > 3:
                 samples += f"; +{len(unresolved_titles) - 3} more"
@@ -453,16 +456,43 @@ def run_unified_pipeline(
             detected_max = res.get("detected_max_pages")
             if isinstance(detected_max, int) and detected_max > 0:
                 site_cp["max_pages"] = max(int(site_cp.get("max_pages", 0) or 0), detected_max)
+            site_status = "completed"
             if not res.get("upsert_failed"):
                 crawled = int(res.get("pages_crawled", 0) or 0)
-                if full_site:
-                    site_cp["last_full_crawl_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                else:
-                    site_cp["current_page"] = start_p + crawled
+                unresolved = int(res.get("skipped_unresolved", 0) or 0)
+                first_unresolved = res.get("first_unresolved_page")
+                if unresolved and isinstance(first_unresolved, int):
+                    # "Kept unmarked for retry" must actually mean retry: hold
+                    # the cursor on the first page with unresolved items for a
+                    # bounded number of cycles, then mark it seen and move on.
+                    from scraper.progress import cursor_retry_state
+                    stall, hold = cursor_retry_state(
+                        stall_count=int(site_cp.get("stall_count", 0) or 0), unresolved=unresolved
+                    )
+                    site_cp["stall_count"] = stall
+                    if hold:
+                        site_cp["current_page"] = max(1, first_unresolved)
+                        site_status = "partial"
+                        print(
+                            f"    [!] Holding {site} cursor at page {first_unresolved} for retry "
+                            f"({unresolved} unresolved, attempt {stall}/5)."
+                        )
+                    else:
+                        print(
+                            f"    [!] Giving up on {unresolved} unresolved {site} posts after 5 "
+                            "attempts; advancing the cursor."
+                        )
+                if site_status == "completed":
+                    site_cp["stall_count"] = 0
+                    if full_site:
+                        site_cp["last_full_crawl_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    else:
+                        site_cp["current_page"] = start_p + crawled
             else:
                 failed_sites.append(site)
+                site_status = "failed"
             checkpoint_state = progress.setdefault("sites", {}).setdefault(site, {})
-            checkpoint_state["status"] = "failed" if res.get("upsert_failed") else "completed"
+            checkpoint_state["status"] = site_status
         except Exception as exc:
             failed_sites.append(site)
             progress.setdefault("sites", {}).setdefault(site, {})["status"] = "failed"

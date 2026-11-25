@@ -423,9 +423,16 @@ def enrich_detail(card: Dict[str, Any], base_url: str, default_category: str) ->
     html, final_url, status = fetch_html(detail_url, referer=base_url)
     card.setdefault("status", "active")
     card.setdefault("dead_reason", None)
-    if not html or status == 0 or "/notfound" in final_url.lower() or status >= 400:
+    if status in (404, 410) or "/notfound" in final_url.lower():
+        # A confirmed missing page is genuinely dead.
         card["status"] = "dead"
-        card["dead_reason"] = "detail_unavailable"
+        card["dead_reason"] = "not_found"
+        return card
+    if not html or status == 0 or status >= 400:
+        # Network/anti-bot/5xx failures are transient: never mark the post dead
+        # or the ID is skipped forever after one challenged request.
+        card["status"] = "unresolved"
+        card["dead_reason"] = "detail_fetch_failed"
         return card
 
     soup = BeautifulSoup(html, "lxml") if BeautifulSoup is not None else None

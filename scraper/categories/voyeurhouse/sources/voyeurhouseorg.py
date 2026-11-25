@@ -272,6 +272,9 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     resp = fetch_page(card.get("detail_url", ""))
     html = _html(resp)
     if not html:
+        # Transient fetch/bot-wall failure: keep it retryable instead of letting
+        # the polisher classify a missing stream as a permanently dead post.
+        card["status"] = "unresolved"
         card["dead_reason"] = "detail_fetch_failed"
         return card
 

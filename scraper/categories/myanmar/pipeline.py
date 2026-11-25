@@ -123,7 +123,9 @@ def make_request(url: str, retries: int = 4, timeout: int = 25) -> Optional[str]
             if res.status_code == 200:
                 return res.text
             elif res.status_code in (404, 410):
-                return None
+                # Confirmed end-of-catalog / removed page, distinct from a
+                # transient network failure (None) so the cursor can advance.
+                return ""
             else:
                 time.sleep(1.5 * (attempt + 1))
         except Exception as e:
@@ -243,18 +245,43 @@ def enrich_video_detail(item: Dict[str, Any]) -> Dict[str, Any]:
 # Pipeline Execution Flow
 # ─────────────────────────────────────────────────────────────────────────────
 
+_CF_CHALLENGE_MARKERS = (
+    "Just a moment...",
+    "challenge-platform",
+    "cf-chl",
+    "Attention Required! | Cloudflare",
+)
+
+
+def _looks_like_cf_challenge(html: str) -> bool:
+    """Returns True for a bot-wall interstitial served with HTTP 200."""
+    lowered = (html or "").lower()
+    # Real catalog pages can embed Cloudflare scripts; only short interstitial
+    # bodies are challenges.
+    return len(html or "") < 20000 and any(
+        marker.lower() in lowered for marker in _CF_CHALLENGE_MARKERS
+    )
+
+
 def scrape_page_with_status(page_num: int, tag: str, known_ids: Set[str], workers: int = 5) -> Tuple[List[Dict[str, Any]], bool]:
     """Scrapes a page and returns ``(polished_records, fetch_ok)``.
 
-    ``fetch_ok=False`` only for request failures; an empty or fully-known
-    catalog page is a successful fetch and may advance the cursor.
+    ``fetch_ok=False`` for request failures or a bot-wall interstitial; an
+    empty or fully-known catalog page is a successful fetch and may advance
+    the cursor.  ``make_request`` returns ``""`` only for a confirmed 404/410.
     """
     url = build_listing_url(page_num, tag)
     print(f"[*] Crawling [{tag}] page {page_num}: {url}")
 
     html = make_request(url)
-    if not html:
+    if html is None:
         print(f"[!] Empty response for page {page_num}")
+        return [], False
+    if html == "":
+        print(f"[*] Page {page_num} returned 404/410; treating as end of catalog.")
+        return [], True
+    if _looks_like_cf_challenge(html):
+        print(f"[!] Bot-wall interstitial on page {page_num}; not advancing the cursor.")
         return [], False
 
     cards = parse_listing_page(html)

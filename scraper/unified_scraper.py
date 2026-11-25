@@ -28,7 +28,7 @@ import signal
 import atexit
 import argparse
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 # Force immediate line-buffering on stdout/stderr for real-time live streaming logs in GitHub Actions
 try:
@@ -126,7 +126,7 @@ def init_known_id_caches() -> None:
     except Exception:
         try:
             from scraper.db import get_scraper_known_post_ids
-            VIRAL_MMS_KNOWN_IDS = get_scraper_known_post_ids("viral-mms", limit=50000)
+            VIRAL_MMS_KNOWN_IDS = get_scraper_known_post_ids("viral-mms", limit=200000)
         except Exception:
             VIRAL_MMS_KNOWN_IDS = set()
     log(f"  [✓] Viral MMS Deduplication Cache: {len(VIRAL_MMS_KNOWN_IDS)} known IDs loaded")
@@ -137,7 +137,7 @@ def init_known_id_caches() -> None:
     except Exception:
         try:
             from scraper.db import get_scraper_known_post_ids
-            JAV_KNOWN_IDS = get_scraper_known_post_ids("supjav", limit=50000)
+            JAV_KNOWN_IDS = get_scraper_known_post_ids("supjav", limit=200000)
         except Exception:
             JAV_KNOWN_IDS = set()
     log(f"  [✓] Japanese JAV Deduplication Cache: {len(JAV_KNOWN_IDS)} known IDs loaded")
@@ -149,7 +149,7 @@ def init_known_id_caches() -> None:
     except Exception:
         try:
             from scraper.db import get_scraper_known_post_ids
-            MYANMAR_KNOWN_IDS = get_scraper_known_post_ids("myanmar", limit=50000)
+            MYANMAR_KNOWN_IDS = get_scraper_known_post_ids("myanmar", limit=200000)
         except Exception:
             MYANMAR_KNOWN_IDS = set()
     log(f"  [✓] Myanmar Deduplication Cache: {len(MYANMAR_KNOWN_IDS)} known IDs loaded")
@@ -260,14 +260,21 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
     new_ingested = 0
     category_errors: List[str] = []
 
-    def commit(items: List[Dict[str, Any]], label: str) -> bool:
+    def commit(items: List[Dict[str, Any]], label: str) -> Tuple[bool, Set[str]]:
+        """Enriches and upserts ``items``.
+
+        Returns ``(all_confirmed, unresolved_ids)``.  ``all_confirmed`` is False
+        when enrichment or the upsert left any item unwritten, so the caller
+        must not advance its page cursor.
+        """
         nonlocal new_ingested
+        wanted = {str(itm["source_post_id"]) for itm in items}
         if not items:
-            return True
+            return True, set()
         enriched = enrich_japanese_items(items, max_workers=workers)
         if not enriched:
             log(f"      [!] {label}: no working mirrors; IDs stay unmarked for retry.")
-            return True
+            return False, wanted
         records = []
         confirmed_ids: Set[str] = set()
         for itm in enriched:
@@ -278,14 +285,17 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
         res = upsert_japanese_videos_batch(records)
         if not rpc_result_succeeded(res):
             log(f"      [!] {label}: upsert failed ({res}). Keeping IDs unmarked for retry.")
-            return False
+            return False, wanted
         JAV_KNOWN_IDS.update(confirmed_ids)
         save_japanese_known_ids(JAV_KNOWN_IDS, new_ids=confirmed_ids, status="stored")
         new_ingested += len(records)
         checkpoint.setdefault("stats", {})["total_ingested"] = int(checkpoint["stats"].get("total_ingested", 0) or 0) + len(records)
         save_japanese_checkpoint(checkpoint)
         log(f"      [✓] {label}: batch upserted {len(records)} videos")
-        return True
+        unresolved = wanted - confirmed_ids
+        if unresolved:
+            log(f"      [!] {label}: {len(unresolved)} video(s) had no working mirror.")
+        return (not unresolved), unresolved
 
     for cat in JAV_CATEGORIES:
         log(f"\n  Checking category: [{cat}]")
@@ -328,10 +338,30 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
                         new_hist = [itm for itm in hist_items if str(itm["source_post_id"]) not in JAV_KNOWN_IDS]
                         if not new_hist:
                             log(f"    Historical Page {curr_cursor}: All {len(hist_items)} releases already indexed.")
-                        elif not commit(new_hist, f"Historical page {curr_cursor}"):
-                            log(f"    [!] Cursor stays on page {curr_cursor} until the batch succeeds.")
-                            continue
+                        else:
+                            fully_stored, unresolved = commit(new_hist, f"Historical page {curr_cursor}")
+                            if not fully_stored:
+                                from scraper.progress import cursor_retry_state
+                                stall_count, hold = cursor_retry_state(
+                                    stall_count=int(cat_state.get("stall_count", 0) or 0),
+                                    unresolved=len(unresolved),
+                                )
+                                cat_state["stall_count"] = stall_count
+                                if hold:
+                                    save_japanese_checkpoint(checkpoint)
+                                    log(
+                                        f"    [!] Cursor stays on page {curr_cursor}; "
+                                        f"{len(unresolved)} unresolved (attempt {stall_count}/5)."
+                                    )
+                                    continue
+                                log(
+                                    f"    [!] Giving up on {len(unresolved)} unresolved video(s) on "
+                                    f"page {curr_cursor} after 5 attempts; marking seen and advancing."
+                                )
+                                JAV_KNOWN_IDS.update(unresolved)
+                                save_japanese_known_ids(JAV_KNOWN_IDS, new_ids=unresolved, status="seen")
                         cat_state["current_page"] = curr_cursor + 1
+                        cat_state["stall_count"] = 0
                         if cat_state["current_page"] > max_pages:
                             cat_state["completed"] = True
                         save_japanese_checkpoint(checkpoint)
@@ -630,6 +660,9 @@ def run_unified_sync_cycle(
     """Executes a single combined sync cycle across target websites."""
     t0 = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    # FEED_STATUS is process-global; a stale "failed" from a previous cycle
+    # previously poisoned every later cycle's summary.
+    FEED_STATUS.clear()
     mode_str = "FULL SYNC (Head + Historical)" if check_head else "FAST BACKFILL (Historical Cursors)"
     log("\n" + "#" * 65)
     log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp} | {mode_str}")
@@ -663,12 +696,14 @@ def run_unified_sync_cycle(
     vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
-    global_status = "failed" if failed_feeds else "completed"
+    partial_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "partial")
+    global_status = "failed" if failed_feeds else "partial" if partial_feeds else "completed"
     try:
         from scraper.progress import save_progress as _save_global_progress
         _save_global_progress("unified", {
             "status": global_status,
             "failed_feeds": failed_feeds,
+            "degraded_feeds": partial_feeds,
             "feeds": dict(FEED_STATUS),
             "counts": feed_counts,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -686,6 +721,8 @@ def run_unified_sync_cycle(
     log(f"  - Voyeur House: {vh_count} new videos ingested")
     if failed_feeds:
         log(f"  - Failed feeds: {', '.join(failed_feeds)}")
+    if partial_feeds:
+        log(f"  - Degraded feeds (items pending retry): {', '.join(partial_feeds)}")
     log("#" * 65)
 
     return {

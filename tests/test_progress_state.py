@@ -114,3 +114,27 @@ def test_finalize_status_keeps_failed_sites_isolated():
 @pytest.mark.parametrize("value", [{}, "", 0, ["ok"]])
 def test_rpc_result_succeeded_accepts_other_results(value):
     assert rpc_result_succeeded(value) is True
+
+
+def test_cursor_retry_holds_then_releases_unresolved_page():
+    assert progress.cursor_retry_state(stall_count=0, unresolved=3) == (1, True)
+    assert progress.cursor_retry_state(stall_count=3, unresolved=3) == (4, True)
+    assert progress.cursor_retry_state(stall_count=4, unresolved=3) == (5, False)
+    assert progress.cursor_retry_state(stall_count=7, unresolved=0) == (0, False)
+
+
+def test_finalize_status_reports_partial_without_hiding_isolated_failures():
+    state = {
+        "sites": {
+            "onlyfans": {"status": "partial"},
+            "voyeurhouse": {"status": "completed"},
+        }
+    }
+
+    assert progress.finalize_status(state, []) == "partial"
+    assert state["degraded_sites"] == ["onlyfans"]
+    assert state["failed_sites"] == []
+
+    assert progress.finalize_status(state, ["myanmar"]) == "failed"
+    assert state["failed_sites"] == ["myanmar"]
+    assert state["degraded_sites"] == ["onlyfans"]

@@ -142,10 +142,18 @@ def _log(site: str, stats: Dict[str, Any], page: int, end_page: int) -> None:
     )
 
 
-def _enrich(items: List[Dict[str, Any]], source_module: Any, workers: int = 5) -> List[Dict[str, Any]]:
+def _enrich(
+    items: List[Dict[str, Any]], source_module: Any, workers: int = 5
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Returns ``(enriched, unresolved)`` items.
+
+    A transient worker failure is not proof that a post is dead, so failed
+    items are returned separately and their IDs stay unmarked for retry.
+    """
     if not items:
-        return []
+        return [], []
     result: List[Dict[str, Any]] = []
+    unresolved: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {executor.submit(source_module.enrich_detail, item): item for item in items}
         for future in as_completed(futures):
@@ -154,10 +162,8 @@ def _enrich(items: List[Dict[str, Any]], source_module: Any, workers: int = 5) -
             except Exception as exc:
                 item = futures[future]
                 print(f"[!] Voyeur House enrich error {item.get('detail_url')}: {exc}")
-                # A transient worker failure is NOT proof that the video is
-                # dead. Drop it so the ID stays unmarked and can be retried.
-                continue
-    return result
+                unresolved.append(item)
+    return result, unresolved
 
 
 def run_site_crawl(
@@ -187,6 +193,8 @@ def run_site_crawl(
         "skipped_known": 0,
         "skipped_dead": 0,
         "skipped_unresolved": 0,
+        "unresolved_keys": [],
+        "first_unresolved_page": None,
         "upserted": 0,
         "upsert_failed": False,
         "detected_max_pages": None,
@@ -215,8 +223,26 @@ def run_site_crawl(
             continue
         known_streak = 0
 
-        enriched = _enrich(fresh, source, workers=workers)
-        stats["skipped_unresolved"] += max(0, len(fresh) - len(enriched))
+        enriched, unresolved_items = _enrich(fresh, source, workers=workers)
+        # A detail fetch that failed because of a bot wall / 5xx must be
+        # retryable.  Only confirmed 404/410/no-embed pages are dead.
+        transient_ids = {
+            id(item) for item in enriched
+            if str(item.get("status") or "").lower() == "unresolved"
+            or item.get("dead_reason") in {"detail_fetch_failed", "detail_unavailable"}
+        }
+        retry_items = unresolved_items + [item for item in enriched if id(item) in transient_ids]
+        unresolved_keys = [
+            f"{site_key}:{item.get('source_post_id')}"
+            for item in retry_items
+            if item.get("source_post_id")
+        ]
+        if unresolved_keys:
+            stats["skipped_unresolved"] += len(unresolved_keys)
+            stats["unresolved_keys"].extend(unresolved_keys)
+            if stats["first_unresolved_page"] is None:
+                stats["first_unresolved_page"] = page_num
+        enriched = [item for item in enriched if id(item) not in transient_ids]
         batch: List[Dict[str, Any]] = []
         pending: List[str] = []
         seen_ids: Set[str] = set()
@@ -335,13 +361,42 @@ def run_pipeline(
                 totals[key] += int(stats.get(key, 0) or 0)
             if stats.get("detected_max_pages"):
                 cp["max_pages"] = max(int(cp.get("max_pages") or 0), int(stats["detected_max_pages"]))
-            if not stats.get("upsert_failed") and not full_site:
-                cp["current_page"] = start + int(stats.get("pages_crawled", 0) or 0)
+            site_status = "completed"
             if stats.get("upsert_failed"):
                 failed_sites.append(site)
-            progress.setdefault("sites", {}).setdefault(site, {})["status"] = (
-                "failed" if stats.get("upsert_failed") else "completed"
-            )
+                site_status = "failed"
+            elif not full_site:
+                crawled = int(stats.get("pages_crawled", 0) or 0)
+                unresolved = int(stats.get("skipped_unresolved", 0) or 0)
+                first_unresolved = stats.get("first_unresolved_page")
+                if unresolved and isinstance(first_unresolved, int):
+                    from scraper.progress import cursor_retry_state
+                    stall, hold = cursor_retry_state(
+                        stall_count=int(cp.get("stall_count", 0) or 0), unresolved=unresolved
+                    )
+                    cp["stall_count"] = stall
+                    if hold:
+                        cp["current_page"] = max(1, first_unresolved)
+                        site_status = "partial"
+                        print(
+                            f"    [!] Holding {site} cursor at page {first_unresolved} for retry "
+                            f"({unresolved} unresolved, attempt {stall}/5)."
+                        )
+                    else:
+                        unresolved_keys = list(stats.get("unresolved_keys") or [])
+                        if unresolved_keys:
+                            known_ids.update(unresolved_keys)
+                            save_known_ids(
+                                known_ids, new_ids=set(unresolved_keys), status="seen"
+                            )
+                        print(
+                            f"    [!] Giving up on {unresolved} unresolved {site} posts after 5 "
+                            "attempts; marking seen and advancing."
+                        )
+                if site_status == "completed":
+                    cp["stall_count"] = 0
+                    cp["current_page"] = start + crawled
+            progress.setdefault("sites", {}).setdefault(site, {})["status"] = site_status
         except Exception as exc:
             failed_sites.append(site)
             progress.setdefault("sites", {}).setdefault(site, {})["status"] = "failed"

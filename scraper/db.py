@@ -599,7 +599,7 @@ def set_scraper_checkpoint(key: str, state: Dict[str, Any]) -> bool:
     data = call_supabase_rpc("scraper_set_checkpoint", {"p_key": key, "p_state": state})
     return isinstance(data, dict) and data.get("success") is True
 
-def get_scraper_known_post_ids(site: str, limit: int = 50000) -> set:
+def get_scraper_known_post_ids(site: str, limit: int = 200000) -> set:
     """Retrieves recently indexed post IDs directly from Supabase to prevent duplicate processing."""
     data = call_supabase_rpc("scraper_get_known_post_ids", {"p_site": site, "p_limit": limit})
     if isinstance(data, list):

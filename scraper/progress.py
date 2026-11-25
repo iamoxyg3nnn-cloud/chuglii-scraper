@@ -152,7 +152,7 @@ def load_known_ids(
     local_file: Optional[Path] = None,
     *,
     prefix: bool = False,
-    limit: int = 50000,
+    limit: int = 200000,
 ) -> Set[str]:
     """Loads known IDs from the local cache and the central Supabase ledger.
 
@@ -246,6 +246,23 @@ def save_progress(key: str, progress: Dict[str, Any], local_file: Optional[Path]
     return save_checkpoint(key, progress, local_file)
 
 
+def cursor_retry_state(
+    *,
+    stall_count: int = 0,
+    unresolved: int = 0,
+    max_stalls: int = 5,
+) -> tuple[int, bool]:
+    """Returns ``(next_stall_count, hold_cursor)`` for unresolved items.
+
+    A page with unresolved items is retried for up to ``max_stalls`` cycles,
+    then released so a permanently broken page cannot block the backfill.
+    """
+    if int(unresolved or 0) <= 0:
+        return 0, False
+    stall = int(stall_count or 0) + 1
+    return stall, stall < max(1, max_stalls)
+
+
 def finalize_status(progress: Dict[str, Any], failed_sites: Iterable[str]) -> str:
     """Derives an honest global status from the per-site outcomes."""
     failures = list(failed_sites)
@@ -255,7 +272,17 @@ def finalize_status(progress: Dict[str, Any], failed_sites: Iterable[str]) -> st
             site for site, state in sites.items()
             if isinstance(state, dict) and state.get("status") == "failed"
         )
-    status = "failed" if sorted(set(failures)) else "completed"
+    partial = [
+        site for site, state in sites.items()
+        if isinstance(state, dict) and state.get("status") == "partial"
+    ]
+    if failures:
+        status = "failed"
+    elif partial:
+        status = "partial"
+    else:
+        status = "completed"
     progress["status"] = status
     progress["failed_sites"] = sorted(set(failures))
+    progress["degraded_sites"] = sorted(set(partial))
     return status

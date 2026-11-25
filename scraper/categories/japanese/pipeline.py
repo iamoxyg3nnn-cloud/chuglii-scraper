@@ -547,6 +547,24 @@ def enrich_items_concurrently(items: List[Dict[str, Any]], max_workers: int = 3,
 
 # ─── Listing Scraper ─────────────────────────────────────────────────────────
 
+_CF_CHALLENGE_MARKERS = (
+    "Just a moment...",
+    "challenge-platform",
+    "cf-chl",
+    "Attention Required! | Cloudflare",
+)
+
+
+def _looks_like_cf_challenge(html: str) -> bool:
+    """Returns True for a Cloudflare interstitial, including HTTP 200 bodies."""
+    lowered = (html or "").lower()
+    # Real catalog pages can embed Cloudflare scripts; only short interstitial
+    # bodies are challenges.
+    return len(html or "") < 20000 and any(
+        marker.lower() in lowered for marker in _CF_CHALLENGE_MARKERS
+    )
+
+
 def scrape_listing_page(session: requests.Session, page_num: int = 1, category: str = "uncensored-jav") -> Optional[List[Dict[str, Any]]]:
     """Scrapes a single page of video cards from SupJav. Auto-rotates validated free proxies if challenged."""
     cfg = CATEGORIES_CONFIG.get(category, {"url_path": f"/category/{category}"})
@@ -570,9 +588,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
             res = session.get(url, **kwargs)
             is_cf_challenge = (
                 res.status_code in (403, 503) or
-                "Just a moment..." in res.text or
-                "challenge-platform" in res.text or
-                "cf-chl" in res.text
+                _looks_like_cf_challenge(res.text)
             )
             if res.status_code == 200 and not is_cf_challenge:
                 soup = BeautifulSoup(res.text, "html.parser")
@@ -588,7 +604,7 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
 
                 # 1. Primary resolution: Auto-solve Turnstile challenge with Scrapling
                 scrapling_html = fetch_with_scrapling(url, session=session)
-                if scrapling_html and "Just a moment..." not in scrapling_html:
+                if scrapling_html and not _looks_like_cf_challenge(scrapling_html):
                     soup = BeautifulSoup(scrapling_html, "html.parser")
                     cards = soup.select(".post")
                     print(f"    Found {len(cards)} video cards (via Scrapling bypass)")
@@ -602,13 +618,17 @@ def scrape_listing_page(session: requests.Session, page_num: int = 1, category: 
                     print(f"    [!] Retrying with configured proxy: {current_proxy}...")
                     session = create_session(impersonate="chrome124")
                 time.sleep(1.5)
+            elif res.status_code in (404, 410):
+                # Confirmed end-of-category / removed page.
+                print(f"    [*] HTTP {res.status_code} on {url}; treating as end of category.")
+                return []
             else:
                 print(f"    [!] HTTP error {res.status_code} on {url}")
                 return None
         except Exception as e:
             print(f"    [!] Connection glitch ({e}). Engaging Scrapling...")
             scrapling_html = fetch_with_scrapling(url, session=session)
-            if scrapling_html and "Just a moment..." not in scrapling_html:
+            if scrapling_html and not _looks_like_cf_challenge(scrapling_html):
                 soup = BeautifulSoup(scrapling_html, "html.parser")
                 cards = soup.select(".post")
                 print(f"    Found {len(cards)} video cards (via Scrapling bypass)")
@@ -745,7 +765,34 @@ def ingest_category_pages(
                 checkpoint["stats"].get("total_ingested", 0) + len(pending_records)
             )
 
+        # Only advance once every new item on the page is stored (or confirmed
+        # dead/photo).  Unresolved enrichments are retried for a bounded number
+        # of cycles instead of being silently skipped.
+        wanted_ids = {str(itm["source_post_id"]) for itm in new_items}
+        unresolved_ids = wanted_ids - known_ids
+        if unresolved_ids:
+            from scraper.progress import cursor_retry_state
+            stall_count, hold = cursor_retry_state(
+                stall_count=int(cat_state.get("stall_count", 0) or 0),
+                unresolved=len(unresolved_ids),
+            )
+            cat_state["stall_count"] = stall_count
+            if hold:
+                print(
+                    f"    [!] {len(unresolved_ids)} video(s) unresolved on page {page_num}; "
+                    f"keeping the cursor here for retry ({stall_count}/5)."
+                )
+                save_checkpoint(checkpoint)
+                break
+            print(
+                f"    [!] Giving up on {len(unresolved_ids)} unresolved video(s) on page "
+                f"{page_num} after 5 attempts; marking them seen and advancing."
+            )
+            known_ids.update(unresolved_ids)
+            save_known_post_ids(known_ids, new_ids=unresolved_ids, status="seen")
+
         cat_state["current_page"] = page_num + 1
+        cat_state["stall_count"] = 0
         if cat_state["current_page"] > cat_state.get("max_pages", to_page):
             cat_state["completed"] = True
         save_checkpoint(checkpoint)

@@ -116,6 +116,24 @@ def detect_total_pages(category: Optional[str] = None, filter_mode: str = "lates
         print(f"[!] Could not detect Viral MMS page count: {e}")
         return None
 
+_CF_CHALLENGE_MARKERS = (
+    "Just a moment...",
+    "challenge-platform",
+    "cf-chl",
+    "Attention Required! | Cloudflare",
+)
+
+
+def _looks_like_cf_challenge(html: str) -> bool:
+    """Returns True for a bot-wall interstitial served with HTTP 200."""
+    lowered = (html or "").lower()
+    # Real catalog pages can embed Cloudflare scripts; only short interstitial
+    # bodies are challenges.
+    return len(html or "") < 20000 and any(
+        marker.lower() in lowered for marker in _CF_CHALLENGE_MARKERS
+    )
+
+
 def scrape_listing_page_with_status(
     page_num: int = 1,
     filter_mode: str = "latest",
@@ -133,6 +151,11 @@ def scrape_listing_page_with_status(
         try:
             res = requests.get(url, impersonate="chrome124", timeout=25)
             if res.status_code == 200:
+                # A Cloudflare/bot-wall interstitial can be served with 200 and
+                # no cards.  Treat it as a failed fetch, never as end-of-catalog.
+                if _looks_like_cf_challenge(res.text):
+                    time.sleep(1.5)
+                    continue
                 soup = BeautifulSoup(res.text, "html.parser")
                 articles = soup.select("article.thumb-block")
                 items = []

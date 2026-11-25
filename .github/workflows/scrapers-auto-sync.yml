@@ -20,17 +20,22 @@ on:
     # Watchdog trigger every 6 hours in case self-chaining misses or is interrupted
     - cron: '0 */6 * * *'
 
-# Strict Anti-Queue Concurrency: cancel any older/stuck run immediately when a new one starts
+# Serialize runs without cancelling the predecessor: a self-chained successor
+# used to cancel its parent mid-checkpoint-commit with cancel-in-progress: true.
 concurrency:
   group: scrapers-auto-sync
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   guard:
     name: Check Scraper Kill Switch
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
+      duplicate: ${{ steps.queue.outputs.duplicate }}
     steps:
       - name: Check SCRAPER_ENABLED repository variable
         id: check
@@ -43,10 +48,23 @@ jobs:
             echo "[OK] Scraper fleet enabled."
           fi
 
+      - name: Skip duplicate queued runs
+        id: queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          queued=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/scrapers-auto-sync.yml/runs?status=queued&per_page=100" --jq '.total_count' || echo 0)
+          if [ "${queued:-0}" -gt 1 ]; then
+            echo "duplicate=true" >> "$GITHUB_OUTPUT"
+            echo "[STOP] Another successor run is already queued; skipping this duplicate."
+          else
+            echo "duplicate=false" >> "$GITHUB_OUTPUT"
+          fi
+
   scrape-fleet:
     name: Scrape All Feeds (Viral MMS, Japanese JAV, Myanmar, OnlyFans & Voyeur House)
     needs: guard
-    if: needs.guard.outputs.enabled == 'true'
+    if: needs.guard.outputs.enabled == 'true' && needs.guard.outputs.duplicate != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 355 # 5h55m (under GitHub's 360m hard limit)
 
@@ -117,7 +135,6 @@ jobs:
             scraper/categories/viral-mms/known_post_ids.json \
             scraper/categories/japanese/checkpoint.json \
             scraper/categories/japanese/known_post_ids.json \
-            scraper/categories/japanese/cf_session.json \
             scraper/categories/myanmar/checkpoint.json \
             scraper/categories/myanmar/known_post_ids.json \
             scraper/categories/onlyfans/checkpoint.json \
@@ -150,7 +167,8 @@ jobs:
           echo "|  SESSION COMPLETED CLEANLY - DISPATCHING SUCCESSOR          |"
           echo "+=============================================================+"
 
-          # Dispatches successor run. With cancel-in-progress: true, there is zero queuing backlog.
+          # Dispatches a successor that waits for this run to finish (serialized
+          # concurrency), so checkpoint commits are never cancelled mid-write.
           gh workflow run scrapers-auto-sync.yml \
             --ref "${{ github.ref_name }}" \
             -f triggered_by="self-chain" \

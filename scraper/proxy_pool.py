@@ -27,6 +27,8 @@ class AutoProxyPool:
         self.min_working = min_working
         self.working_proxies: List[str] = []
         self.failed_proxies: Set[str] = set()
+        self.last_refresh_at: float = 0.0
+        self.refresh_cooldown: float = 60.0
 
     def harvest_candidates(self, max_candidates: int = 300) -> List[str]:
         """Harvests fresh proxy candidates from multiple public APIs."""
@@ -79,6 +81,7 @@ class AutoProxyPool:
 
     def refresh_pool(self, max_probes: int = 150, workers: int = 35) -> int:
         """Probes proxy candidates concurrently and populates the verified working pool."""
+        self.last_refresh_at = time.time()
         candidates = self.harvest_candidates(max_candidates=max_probes)
         if not candidates:
             print("[!] Could not harvest proxy candidates.")
@@ -111,15 +114,24 @@ class AutoProxyPool:
             return env_proxy
         if self.working_proxies:
             return random.choice(self.working_proxies)
-        # Limit candidate probes to prevent stalling if free proxies are exhausted
-        if not self.working_proxies and len(self.failed_proxies) < 15:
-            self.refresh_pool(max_probes=40, workers=20)
+        # A drained pool must be refreshable.  The old <15 blacklist guard
+        # permanently disabled refresh once an env proxy had failed a few
+        # times, leaving every later cycle proxy-less.
+        now = time.time()
+        if now - self.last_refresh_at >= self.refresh_cooldown:
+            self.failed_proxies.clear()
+            self.refresh_pool(max_probes=60, workers=20)
         if self.working_proxies:
             return random.choice(self.working_proxies)
         return None
 
     def report_failure(self, proxy_url: str) -> None:
         """Marks a proxy as failed and removes it from the active pool."""
+        if not proxy_url:
+            return
+        if proxy_url in self.failed_proxies:
+            # Already evicted; repeated reports only spam the log.
+            return
         self.failed_proxies.add(proxy_url)
         if proxy_url in self.working_proxies:
             self.working_proxies.remove(proxy_url)

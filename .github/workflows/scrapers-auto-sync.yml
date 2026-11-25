@@ -121,6 +121,7 @@ jobs:
           echo "Feed 4: OnlyFans Leaks (Multi-Site Aggregator -> scraper.onlyfans_videos)"
           echo "Feed 5: Voyeur House (5 isolated websites -> isolated per-site tables)"
           echo "Feed 6: Chinese (uxj838238 -> scraper.chinese_videos, 37 zones, JAV/livestream excluded)"
+          echo "Feed 7: Fangsung (www.fangsung.com -> scraper.fangsung_videos, region terms)"
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -138,6 +139,12 @@ jobs:
         # English-only UI never shows CJK fallbacks.
         if: ${{ !cancelled() }}
         run: python -X utf8 scraper/categories/chinese/translate_backfill.py --limit 2000 || true
+
+      - name: Backfill English Titles (fangsung safety net)
+        # Same safety net for the fangsung category: ingest-time translation
+        # plus a catch-up pass so the English-only UI never shows CJK.
+        if: ${{ !cancelled() }}
+        run: python -X utf8 scraper/categories/fangsung/translate_backfill.py --limit 2000 || true
 
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can
@@ -161,7 +168,10 @@ jobs:
             scraper/categories/voyeurhouse/progress.json \
             scraper/categories/chinese/checkpoint.json \
             scraper/categories/chinese/known_post_ids.json \
-            scraper/categories/chinese/progress.json; do
+            scraper/categories/chinese/progress.json \
+            scraper/categories/fangsung/checkpoint.json \
+            scraper/categories/fangsung/known_post_ids.json \
+            scraper/categories/fangsung/progress.json; do
             [ -f "$f" ] && git add "$f" || true
           done
           if ! git diff --staged --quiet; then

@@ -771,6 +771,114 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
         return 0
 
 
+def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> int:
+    """Runs the fangsung category (www.fangsung.com) per-region-term with
+    remote-first state. All records go strictly into scraper.fangsung_videos."""
+    log("\n" + "=" * 65)
+    log("  [FEED 7/7] Fangsung Category Fleet | www.fangsung.com | Isolated DB")
+    log("=" * 65)
+    try:
+        from scraper.categories.fangsung.pipeline import (
+            run_category_crawl,
+            load_checkpoints,
+            save_checkpoints,
+            load_known_ids as load_fs_known_ids,
+            save_known_ids as save_fs_known_ids,
+            load_progress as load_fs_progress,
+            save_progress as save_fs_progress,
+            SITE_KEY as FS_SITE_KEY,
+            DEFAULT_CATEGORIES as FS_CATEGORIES,
+        )
+        from scraper.categories.fangsung.categories import category_info as fs_category_info
+        from scraper.progress import finalize_status
+
+        checkpoints = load_checkpoints()
+        known_ids = load_fs_known_ids()
+        progress = load_fs_progress()
+        progress.update({
+            "status": "running",
+            "started_at": progress.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": "head_and_backfill",
+            "categories_requested": FS_CATEGORIES,
+        })
+        save_fs_progress(progress)
+
+        total_new = 0
+        failed_categories: List[str] = []
+
+        for category_id in FS_CATEGORIES:
+            if not fs_category_info(category_id):
+                continue
+            cat_key = f"{FS_SITE_KEY}:{category_id}"
+            cat_state = checkpoints.setdefault(cat_key, {"current_page": 1, "max_pages": 50})
+            try:
+                curr_cursor = int(cat_state.get("current_page", 1) or 1)
+                max_pages = int(cat_state.get("max_pages", 50) or 50)
+
+                if check_head:
+                    h_stats = run_category_crawl(
+                        site_key=FS_SITE_KEY,
+                        category_id=category_id,
+                        start_page=1,
+                        max_pages=1,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.5,
+                        new_only=True,
+                        progress=progress,
+                    )
+                    total_new += int(h_stats.get("upserted", 0) or 0)
+
+                if curr_cursor <= max_pages:
+                    c_stats = run_category_crawl(
+                        site_key=FS_SITE_KEY,
+                        category_id=category_id,
+                        start_page=curr_cursor,
+                        max_pages=pages_per_category,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.8,
+                        progress=progress,
+                    )
+                    total_new += int(c_stats.get("upserted", 0) or 0)
+                    if not c_stats.get("upsert_failed"):
+                        crawled = int(c_stats.get("pages_crawled", 0) or 0)
+                        if crawled > 0:
+                            cat_state["current_page"] = curr_cursor + crawled
+                    else:
+                        failed_categories.append(category_id)
+                    detected_max = c_stats.get("detected_max_pages")
+                    if isinstance(detected_max, int) and detected_max > 0:
+                        cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
+
+                cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cat_progress["status"] = "failed" if category_id in failed_categories else "completed"
+            except Exception as e:
+                failed_categories.append(category_id)
+                cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cat_progress["status"] = "failed"
+                cat_progress["last_error"] = str(e)
+                log(f"  [!] Fangsung term [{category_id}] failed in isolation: {e}")
+
+            checkpoints[cat_key] = cat_state
+            save_fs_known_ids(known_ids)
+            save_checkpoints(checkpoints)
+            save_fs_progress(progress)
+
+        fs_status = finalize_status(progress, failed_categories)
+        FEED_STATUS["fangsung"] = fs_status
+        progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        progress["totals"] = {"upserted": total_new}
+        save_fs_progress(progress)
+
+        log(f"\n  [OK] Fangsung category sync complete. Records appended: {total_new}")
+        return total_new
+    except Exception as e:
+        FEED_STATUS["fangsung"] = "failed"
+        log(f"  [!] Fangsung sync error: {e}")
+        return 0
+
+
 # ─── Unified Cycle Executor ───────────────────────────────────────────────────
 
 def run_unified_sync_cycle(
@@ -780,6 +888,7 @@ def run_unified_sync_cycle(
     of_pages: int = 1,
     vh_pages: int = 1,
     cn_pages: int = 1,
+    fs_pages: int = 1,
     workers: int = 3,
     supabase_deadline: Optional[float] = None,
 ) -> Dict[str, int]:
@@ -803,6 +912,7 @@ def run_unified_sync_cycle(
             "onlyfans": 0,
             "voyeurhouse": 0,
             "chinese": 0,
+            "fangsung": 0,
         }
 
     init_known_id_caches()
@@ -832,6 +942,8 @@ def run_unified_sync_cycle(
     vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
     human_jitter(1.5, 2.5)
     cn_count = run_feed("chinese", run_chinese_sync, check_head=check_head, pages_per_category=cn_pages)
+    human_jitter(1.5, 2.5)
+    fs_count = run_feed("fangsung", run_fangsung_sync, check_head=check_head, pages_per_category=fs_pages)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
     partial_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "partial")
@@ -858,6 +970,7 @@ def run_unified_sync_cycle(
     log(f"  - OnlyFans:     {of_count} new videos ingested")
     log(f"  - Voyeur House: {vh_count} new videos ingested")
     log(f"  - Chinese:      {cn_count} new items ingested")
+    log(f"  - Fangsung:     {fs_count} new videos ingested")
     if failed_feeds:
         log(f"  - Failed feeds: {', '.join(failed_feeds)}")
     if partial_feeds:
@@ -871,6 +984,7 @@ def run_unified_sync_cycle(
         "onlyfans": of_count,
         "voyeurhouse": vh_count,
         "chinese": cn_count,
+        "fangsung": fs_count,
     }
 
 
@@ -881,6 +995,7 @@ def run_continuous_daemon(
     interval_seconds: int = 60,
     workers: int = 3,
     cn_pages: int = 1,
+    fs_pages: int = 1,
 ) -> None:
     """
     Runs a continuous multi-site scraping daemon.
@@ -933,6 +1048,7 @@ def run_continuous_daemon(
                 of_pages=1,
                 vh_pages=1,
                 cn_pages=cn_pages,
+                fs_pages=fs_pages,
                 workers=workers,
                 supabase_deadline=supabase_handoff_deadline,
             )
@@ -965,9 +1081,11 @@ if __name__ == "__main__":
     parser.add_argument("--of-pages", type=int, default=1, help="Pages of OnlyFans to scrape per site")
     parser.add_argument("--vh-pages", type=int, default=1, help="Pages per Voyeur House website to scrape per run")
     parser.add_argument("--cn-pages", type=int, default=1, help="Pages per Chinese category to scrape per run")
+    parser.add_argument("--fs-pages", type=int, default=1, help="Pages per fangsung region term to scrape per run")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
+    parser.add_argument("--fangsung", action="store_true", help="Run only the fangsung category sync cycle")
     parser.add_argument("--thumbs", type=int, default=0, metavar="N", help="Generate sprite storyboards for N videos and exit")
     parser.add_argument("--check-head", action="store_true", default=True, help="Check Page 1 for latest releases")
     args = parser.parse_args()
@@ -994,12 +1112,18 @@ if __name__ == "__main__":
             run_chinese_sync(check_head=args.check_head, pages_per_category=args.cn_pages)
         else:
             log("[STOP] Supabase unavailable; Chinese sync did not start.")
+    elif args.fangsung:
+        if wait_for_supabase_before_cycle():
+            run_fangsung_sync(check_head=args.check_head, pages_per_category=args.fs_pages)
+        else:
+            log("[STOP] Supabase unavailable; Fangsung sync did not start.")
     elif args.daemon:
         run_continuous_daemon(
             session_minutes=args.session_minutes,
             interval_seconds=args.interval,
             workers=args.workers,
             cn_pages=args.cn_pages,
+            fs_pages=args.fs_pages,
         )
     else:
         run_unified_sync_cycle(
@@ -1009,5 +1133,6 @@ if __name__ == "__main__":
             of_pages=args.of_pages,
             vh_pages=args.vh_pages,
             cn_pages=args.cn_pages,
+            fs_pages=args.fs_pages,
             workers=args.workers
         )

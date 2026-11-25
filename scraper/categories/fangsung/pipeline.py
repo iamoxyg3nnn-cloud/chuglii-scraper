@@ -408,6 +408,9 @@ def run_fangsung_pipeline(
                 known_ids=known_ids, dry_run=dry_run, jitter=0.5, new_only=True, progress=progress,
             )
             total_new += int(h.get("upserted", 0) or 0)
+            h_max = h.get("detected_max_pages")
+            if isinstance(h_max, int) and h_max > 0:
+                cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), h_max)
         curr = int(cat_state.get("current_page", 1) or 1)
         s = run_category_crawl(
             site_key=SITE_KEY, category_id=term, start_page=curr, max_pages=pages_per_category,
@@ -416,6 +419,9 @@ def run_fangsung_pipeline(
         total_new += int(s.get("upserted", 0) or 0)
         if not s.get("upsert_failed") and int(s.get("pages_crawled", 0) or 0) > 0:
             cat_state["current_page"] = curr + int(s.get("pages_crawled", 0) or 0)
+        s_max = s.get("detected_max_pages")
+        if isinstance(s_max, int) and s_max > 0:
+            cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), s_max)
         checkpoints[f"{SITE_KEY}:{term}"] = cat_state
         save_known_ids(known_ids)
         save_checkpoints(checkpoints)

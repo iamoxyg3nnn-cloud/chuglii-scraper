@@ -20,6 +20,7 @@ import re
 import json
 import base64
 import time
+import subprocess
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -271,6 +272,38 @@ def _extract_screenshots(html_block: str, limit: int = 24) -> List[str]:
     return out
 
 
+def _probe_hls_resolution(hls_url: str, timeout: int = 30) -> Optional[Tuple[int, int]]:
+    """Probes the real rendition resolution of an HLS stream with ffprobe.
+
+    The site serves exactly one rendition per video (verified: play.m3u8 has
+    no master variants and zone=2/3 return 'file lost'), so this captures the
+    only - and therefore highest - quality available. Direct-to-CDN with a
+    browser UA; ffprobe reads the playlist + first segment only.
+    """
+    if not hls_url:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0",
+                "-analyzeduration", "1500000", "-probesize", "1500000",
+                hls_url,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return None
+
+
 def _enrich_video(card: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     cdn_list = payload.get("cdn") or []
     cdn_endpoints = []
@@ -288,9 +321,19 @@ def _enrich_video(card: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, An
     merged["thumbnail_url"] = cover
     merged["clean_thumbnail_url"] = cover
     merged["cdn_endpoints"] = cdn_endpoints
-    # Quality: site serves a single HLS rendition; keep the standard 720p baseline.
-    merged["quality_label"] = "720p HD"
-    merged["quality_score"] = 720
+    # Real resolution via ffprobe (single-rendition site; fallback 'HD').
+    probed = _probe_hls_resolution(hls_url) if hls_url else None
+    if probed:
+        w, h = probed
+        merged["resolution"] = f"{w}x{h}"
+        # "p" convention = the smaller dimension (1080p landscape 1920x1080,
+        # 1080p portrait 1080x1920 are both "1080p")
+        merged["quality_label"] = f"{min(w, h)}p"
+        merged["quality_score"] = min(w, h)
+    else:
+        merged["resolution"] = None
+        merged["quality_label"] = "HD"
+        merged["quality_score"] = 720
     merged["raw_payload"] = {
         "source": SOURCE_SITE,
         "cdn_count": len(cdn_endpoints),

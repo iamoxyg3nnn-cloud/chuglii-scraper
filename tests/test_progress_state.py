@@ -138,3 +138,54 @@ def test_finalize_status_reports_partial_without_hiding_isolated_failures():
     assert progress.finalize_status(state, ["myanmar"]) == "failed"
     assert state["failed_sites"] == ["myanmar"]
     assert state["degraded_sites"] == ["onlyfans"]
+
+
+def _patch_cycle_dependencies(monkeypatch):
+    import scraper.unified_scraper as unified
+
+    monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: None)
+    monkeypatch.setattr(unified, "init_known_id_caches", lambda: None)
+    monkeypatch.setattr(unified, "load_japanese_checkpoint", lambda: {})
+    monkeypatch.setattr(unified, "human_jitter", lambda *args, **kwargs: None)
+    saved = {}
+    monkeypatch.setattr(
+        progress, "save_progress",
+        lambda key, state, local_file=None: saved.update(state) or True,
+    )
+    for name in (
+        "run_viral_mms_sync",
+        "run_japanese_jav_sync",
+        "run_myanmar_sync",
+        "run_onlyfans_sync",
+        "run_voyeurhouse_sync",
+    ):
+        monkeypatch.setattr(unified, name, lambda **kwargs: 1)
+    return unified, saved
+
+
+def test_unified_cycle_discards_stale_feed_status(monkeypatch):
+    unified, saved = _patch_cycle_dependencies(monkeypatch)
+    unified.FEED_STATUS["supjav"] = "failed"
+
+    result = unified.run_unified_sync_cycle(check_head=False)
+
+    assert result["mms"] == 1
+    assert saved["status"] == "completed"
+    assert saved["failed_feeds"] == []
+    assert saved["feeds"]["supjav"] == "completed"
+
+
+def test_unified_cycle_reports_degraded_feeds(monkeypatch):
+    unified, saved = _patch_cycle_dependencies(monkeypatch)
+
+    def partial_onlyfans(**kwargs):
+        unified.FEED_STATUS["onlyfans"] = "partial"
+        return 0
+
+    monkeypatch.setattr(unified, "run_onlyfans_sync", partial_onlyfans)
+
+    unified.run_unified_sync_cycle(check_head=False)
+
+    assert saved["status"] == "partial"
+    assert saved["degraded_feeds"] == ["onlyfans"]
+    assert saved["failed_feeds"] == []

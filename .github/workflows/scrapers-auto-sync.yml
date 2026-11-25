@@ -17,7 +17,7 @@ on:
         required: false
         default: '60'
       deep_backfill:
-        description: 'Activate deep backfill until archives are fully indexed (none | chinese | fangsung | all)'
+        description: 'Activate deep backfill until archives are fully indexed (none | chinese | fangsung | studios | all)'
         required: false
         default: 'none'
   schedule:
@@ -133,6 +133,7 @@ jobs:
           echo "Feed 5: Voyeur House (5 isolated websites -> isolated per-site tables)"
           echo "Feed 6: Chinese (uxj838238 -> scraper.chinese_videos, 37 zones, JAV/livestream excluded)"
           echo "Feed 7: Fangsung (www.fangsung.com -> scraper.fangsung_videos, region terms)"
+          echo "Feed 8: Studios (madouer.cc -> scraper.studios_videos, site sections)"
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -156,6 +157,12 @@ jobs:
         # plus a catch-up pass so the English-only UI never shows CJK.
         if: ${{ !cancelled() }}
         run: python -X utf8 scraper/categories/fangsung/translate_backfill.py --limit 2000 || true
+
+      - name: Backfill English Titles (studios safety net)
+        # Same safety net for the studios category: ingest-time translation
+        # plus a catch-up pass so the English-only UI never shows CJK.
+        if: ${{ !cancelled() }}
+        run: python -X utf8 scraper/categories/studios/translate_backfill.py --limit 2000 || true
 
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can

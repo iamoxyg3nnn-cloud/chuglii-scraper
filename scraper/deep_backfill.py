@@ -31,6 +31,7 @@ FLAG_KEY = "deep_backfill"
 TARGETS = {
     "chinese": {"pipeline": "scraper.categories.chinese.pipeline", "site_key": "uxj838238", "label": "Chinese (uxj838238)"},
     "fangsung": {"pipeline": "scraper.categories.fangsung.pipeline", "site_key": "fangsung", "label": "Fangsung (www.fangsung.com)"},
+    "studios": {"pipeline": "scraper.categories.studios.pipeline", "site_key": "madouer", "label": "Studios (madouer.cc)"},
 }
 
 

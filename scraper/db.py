@@ -434,6 +434,58 @@ def get_fangsung_videos(source_site: Optional[str] = None, category: Optional[st
         return []
 
 
+def upsert_studios_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """
+    Batch inserts or updates records strictly in scraper.studios_videos.
+    Zero cross-contamination: never touches or falls back to scraper.videos.
+    """
+    if not polished_records:
+        return {"success": True, "count": 0}
+
+    # Isolated RPC strictly targeting scraper.studios_videos
+    res = call_supabase_rpc("scraper_upsert_studios_videos", {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+
+    # Fallback to direct supabase-py client strictly on scraper_upsert_studios_videos
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_studios_videos", {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase studios upsert batch failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(wait_time)
+
+
+def get_studios_videos(source_site: Optional[str] = None, category: Optional[str] = None, tag: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Retrieves stored records strictly from scraper.studios_videos using RPC bridge.
+    """
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_category": category,
+        "p_tag": tag,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset,
+    }
+    try:
+        res = supabase.rpc("scraper_get_studios_videos", params).execute()
+        return res.data or []
+    except Exception as e:
+        print(f"[!] get_studios_videos failed: {e}")
+        return []
+
+
 def get_chinese_videos(source_site: Optional[str] = None, content_type: Optional[str] = None, category: Optional[str] = None, tag: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0, group: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Retrieves stored records strictly from scraper.chinese_videos using RPC bridge.

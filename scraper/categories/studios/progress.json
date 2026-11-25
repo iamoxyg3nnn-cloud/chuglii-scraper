@@ -1,0 +1,34 @@
+{
+  "status": "completed",
+  "categories": {
+    "madouer:1": {
+      "category": "madouer:1",
+      "mode": "resume",
+      "status": "completed",
+      "start_page": 2,
+      "end_page": 2,
+      "current_page": 2,
+      "pages_crawled": 1,
+      "items_found": 36,
+      "items_new": 36,
+      "skipped_known": 0,
+      "skipped_dead": 0,
+      "skipped_unresolved": 0,
+      "upserted": 36,
+      "errors": 0,
+      "last_error": null,
+      "started_at": "2026-11-25T16:48:56.557888+00:00",
+      "finished_at": "2026-11-25T16:50:07.402984+00:00"
+    }
+  },
+  "started_at": "2026-11-25T16:45:28.373139+00:00",
+  "mode": "head_and_backfill",
+  "categories_requested": [
+    "1"
+  ],
+  "updated_at": "2026-11-25T16:50:11.105605+00:00",
+  "finished_at": "2026-11-25T16:50:11.105560+00:00",
+  "totals": {
+    "upserted": 72
+  }
+}

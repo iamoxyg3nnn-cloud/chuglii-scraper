@@ -285,22 +285,25 @@ def run_category_crawl(
         confirmed_ids: Set[str] = set()
         seen_ids: Set[str] = set()
         unresolved_titles: List[str] = []
+        unresolved_keys: Set[str] = set()
         for raw in enriched:
             item_key = f"{site_key}:video:{raw.get('source_post_id')}"
             if raw.get("dead"):
                 # Detail fetch failed (anti-bot/transient): keep unmarked for retry.
                 unresolved_titles.append(str(raw.get("title") or "untitled"))
+                unresolved_keys.add(item_key)
                 continue
 
             try:
+                # Inject the zone id into the RAW item BEFORE polishing so
+                # polish_studios_record bakes it into `categories` (the SQL
+                # chip-filter field) as [site_key, zone_id].
+                raw["raw_payload"] = {"category_id": category_id}
                 polished = polish_studios_record(raw)
-                # Carry the source zone id in raw_payload so SQL-side category
-                # filters (e.g. the Chinese category union RPC) can filter by
-                # zone without a dedicated column.
-                polished["raw_payload"] = {"category_id": category_id}
                 # Videos must have a playable stream.
                 if not polished.get("full_video_url"):
                     unresolved_titles.append(str(polished.get("title") or "untitled"))
+                    unresolved_keys.add(item_key)
                     continue
                 batch_to_upsert.append(polished)
                 pending_ids.add(item_key)
@@ -364,7 +367,9 @@ def run_category_crawl(
 
         new_keys = {f"{site_key}:video:{c.get('source_post_id')}" for c in new_cards}
         if upsert_succeeded:
-            known_ids.update(new_keys)
+            # Never ledger unresolved items: they must be retried on a later
+            # run once the transient failure (anti-bot, rate limit) clears.
+            known_ids.update(new_keys - unresolved_keys)
             if confirmed_ids:
                 save_known_ids(known_ids, new_ids=confirmed_ids)
 

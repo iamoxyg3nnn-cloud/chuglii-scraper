@@ -33,6 +33,9 @@ except Exception:  # pragma: no cover
 
 BASE_URL = "https://madouhd.cc"
 SOURCE_SITE = "madouhd"
+
+_RE_EXTINF = re.compile(r"#EXTINF:([\d.]+)")
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 STREAM_HOST = "fgds54gg.sxtmo.com"
 
 _RE_CARD = re.compile(
@@ -40,8 +43,9 @@ _RE_CARD = re.compile(
     r'.*?<img[^>]*data-original="([^"]+)"',
     re.S,
 )
+# data-url path prefix varies per section (/video/, /laosiji/, ...) — match any.
 _RE_PLAYER = re.compile(
-    r'id="article-videos"[^>]*data-url="(/video/[^"]+\.m3u8)"[^>]*data-cdnline="([^"]+)"',
+    r'id="article-videos"[^>]*data-url="(/[^"]+\.m3u8)"[^>]*data-cdnline="([^"]+)"',
     re.S,
 )
 _RE_DATE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
@@ -155,6 +159,21 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
 
     stream = (m.group(2).rstrip("/") + m.group(1)).strip()
     merged["full_video_url"] = stream
+    merged["video_mime_type"] = "application/x-mpegURL"
+
+    # Duration: fetch the playlist and sum its EXTINF values (playlists are
+    # AES-KEY-protected but EXTINF lines stay plaintext).
+    try:
+        import urllib.request as _ur
+        req = _ur.Request(stream, headers={"User-Agent": UA, "Referer": BASE_URL + "/"})
+        playlist = _ur.urlopen(req, timeout=20).read().decode("utf-8", "replace")
+        total_secs = sum(float(x) for x in _RE_EXTINF.findall(playlist))
+        if total_secs > 0:
+            merged["duration_seconds"] = int(round(total_secs))
+            mins, secs = divmod(int(round(total_secs)), 60)
+            merged["duration_formatted"] = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
+    except Exception as e:
+        print(f"    [madouhd] duration probe failed for {card.get('source_post_id')}: {e}")
 
     md = _RE_DATE.search(html)
     if md:

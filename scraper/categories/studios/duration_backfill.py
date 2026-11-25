@@ -85,10 +85,9 @@ def run_site(site: str, limit: int) -> None:
         try:
             if site == "dasj91":
                 dur = src.enrich_detail(dict(row)).get("duration_seconds")
-            elif site == "madouhd":
-                dur = src.enrich_detail(dict(row)).get("duration_seconds")
-            else:
-                # madouer stores a live m3u8 in full_video_url - probe it directly
+            elif site in ("madouer", "madouhd"):
+                # Both store a direct (tokenless) m3u8 in full_video_url -
+                # probe it directly rather than refetching the detail page.
                 dur = _sum_playlist_duration(str(row.get("full_video_url") or ""))
         except Exception:
             dur = None

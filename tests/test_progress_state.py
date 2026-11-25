@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from scraper import progress
+from scraper import db, progress
 from scraper.db import rpc_result_succeeded
 
 
@@ -143,7 +143,7 @@ def test_finalize_status_reports_partial_without_hiding_isolated_failures():
 def _patch_cycle_dependencies(monkeypatch):
     import scraper.unified_scraper as unified
 
-    monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: None)
+    monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: True)
     monkeypatch.setattr(unified, "init_known_id_caches", lambda: None)
     monkeypatch.setattr(unified, "load_japanese_checkpoint", lambda: {})
     monkeypatch.setattr(unified, "human_jitter", lambda *args, **kwargs: None)
@@ -189,3 +189,88 @@ def test_unified_cycle_reports_degraded_feeds(monkeypatch):
     assert saved["status"] == "partial"
     assert saved["degraded_feeds"] == ["onlyfans"]
     assert saved["failed_feeds"] == []
+
+
+def test_supabase_health_requires_usable_rpc(monkeypatch):
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    response = FakeResponse(200, {})
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(db.httpx, "Client", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(db, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(db, "SUPABASE_KEY", "test-key")
+
+    assert db.is_supabase_healthy() is True
+
+    response = FakeResponse(530, {})
+    assert db.is_supabase_healthy() is False
+
+    response = FakeResponse(200, {"success": False, "error": "database unavailable"})
+    assert db.is_supabase_healthy() is False
+
+
+def test_wait_for_supabase_reports_timeout_as_not_online(monkeypatch):
+    times = iter([0, 0, 1, 2, 3])
+    slept = []
+    monkeypatch.setattr(db, "is_supabase_healthy", lambda: False)
+    monkeypatch.setattr(db.time, "time", lambda: next(times, 3))
+    monkeypatch.setattr(db.time, "sleep", lambda seconds: slept.append(seconds))
+
+    assert db.wait_for_supabase(max_wait_seconds=2, poll_interval=1) is False
+    assert slept == [1]
+
+
+def test_wait_for_supabase_before_cycle_respects_session_deadline(monkeypatch):
+    import scraper.unified_scraper as unified
+
+    seen = {}
+    monkeypatch.setattr(unified.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        unified,
+        "wait_for_supabase",
+        lambda **kwargs: seen.update(kwargs) or True,
+    )
+
+    assert unified.wait_for_supabase_before_cycle(610.0) is True
+    assert seen == {"max_wait_seconds": 510, "poll_interval": 15}
+
+    monkeypatch.setattr(unified.time, "time", lambda: 700.0)
+    assert unified.wait_for_supabase_before_cycle(610.0) is False
+    assert seen["max_wait_seconds"] == 510
+
+
+def test_unified_cycle_skips_all_feeds_while_supabase_is_down(monkeypatch):
+    unified, saved = _patch_cycle_dependencies(monkeypatch)
+    called = []
+    monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: False)
+    monkeypatch.setattr(unified, "init_known_id_caches", lambda: called.append("caches"))
+    for name in (
+        "run_viral_mms_sync",
+        "run_japanese_jav_sync",
+        "run_myanmar_sync",
+        "run_onlyfans_sync",
+        "run_voyeurhouse_sync",
+    ):
+        monkeypatch.setattr(unified, name, lambda **kwargs: called.append("feed") or 1)
+
+    result = unified.run_unified_sync_cycle(check_head=False)
+
+    assert result == {"mms": 0, "jav": 0, "myanmar": 0, "onlyfans": 0, "voyeurhouse": 0}
+    assert called == []
+    assert saved == {}

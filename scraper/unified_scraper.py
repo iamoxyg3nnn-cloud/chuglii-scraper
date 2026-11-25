@@ -16,6 +16,7 @@ Features:
   - Automatic orphan browser cleanup (reaps zombie chrome/patchright processes on exit/signal)
   - Intelligent Head-check throttling (checks Page 1 every 10m, focuses continuous daemon on historical backfill)
   - Strict working locker enforcement (VOE HD, VidSpeed, LuluStream)
+  - Supabase outage gate: waits for RPC recovery before each cycle, never scrapes offline
   - Self-chaining daemon mode for continuous 24/7 cloud execution
   - Immediate unbuffered live logs with active heartbeat countdowns
 """
@@ -90,6 +91,16 @@ from scraper.categories.japanese.pipeline import (
 def log(msg: str = "") -> None:
     """Prints message immediately flushed to stdout."""
     print(msg, flush=True)
+
+
+def wait_for_supabase_before_cycle(deadline: Optional[float] = None) -> bool:
+    """Waits for Supabase until the wait deadline; never scrapes while offline."""
+    max_wait = 600 if deadline is None else int(max(0, deadline - time.time()))
+    if max_wait <= 0:
+        log("[!] Supabase is still offline at session handoff. Successor run will retry.")
+        return False
+    return bool(wait_for_supabase(max_wait_seconds=max_wait, poll_interval=15))
+
 
 # ─── Human Politeness & Adaptive Jitter ───────────────────────────────────────
 
@@ -656,6 +667,7 @@ def run_unified_sync_cycle(
     of_pages: int = 1,
     vh_pages: int = 1,
     workers: int = 3,
+    supabase_deadline: Optional[float] = None,
 ) -> Dict[str, int]:
     """Executes a single combined sync cycle across target websites."""
     t0 = time.time()
@@ -668,7 +680,16 @@ def run_unified_sync_cycle(
     log(f"  STARTING UNIFIED SYNC CYCLE | {timestamp} | {mode_str}")
     log("#" * 65)
 
-    wait_for_supabase(max_wait_seconds=600, poll_interval=15)
+    if not wait_for_supabase_before_cycle(supabase_deadline):
+        log("[PAUSE] Supabase unavailable. No feed will run until Supabase is back online.")
+        return {
+            "mms": 0,
+            "jav": 0,
+            "myanmar": 0,
+            "onlyfans": 0,
+            "voyeurhouse": 0,
+        }
+
     init_known_id_caches()
 
     checkpoint = load_japanese_checkpoint()
@@ -752,6 +773,9 @@ def run_continuous_daemon(
     """
     start_time = time.time()
     max_seconds = session_minutes * 60
+    # Reserve the handoff window so a Supabase wait can never consume the
+    # successor's checkout time or exceed the GitHub Actions job timeout.
+    supabase_handoff_deadline = start_time + max_seconds - (interval_seconds + 30)
     cycle = 1
     last_head_check = 0.0
     HEAD_CHECK_INTERVAL = 600.0  # Check Page 1 every 10 minutes
@@ -782,7 +806,15 @@ def run_continuous_daemon(
 
         log(f"\n>>> CYCLE #{cycle} | Session elapsed: {elapsed / 60:.1f}m | Remaining: {remaining / 60:.1f}m <<<")
         try:
-            run_unified_sync_cycle(check_head=check_head, mms_pages=1, jav_pages=1, of_pages=1, vh_pages=1, workers=workers)
+            run_unified_sync_cycle(
+                check_head=check_head,
+                mms_pages=1,
+                jav_pages=1,
+                of_pages=1,
+                vh_pages=1,
+                workers=workers,
+                supabase_deadline=supabase_handoff_deadline,
+            )
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
@@ -817,12 +849,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.onlyfans:
-        wait_for_supabase(max_wait_seconds=600, poll_interval=15)
-        init_known_id_caches()
-        run_onlyfans_sync(check_head=args.check_head, pages_per_site=args.of_pages)
+        if wait_for_supabase_before_cycle():
+            init_known_id_caches()
+            run_onlyfans_sync(check_head=args.check_head, pages_per_site=args.of_pages)
+        else:
+            log("[STOP] Supabase unavailable; OnlyFans sync did not start.")
     elif args.voyeurhouse:
-        wait_for_supabase(max_wait_seconds=600, poll_interval=15)
-        run_voyeurhouse_sync(check_head=args.check_head, pages_per_site=args.vh_pages)
+        if wait_for_supabase_before_cycle():
+            run_voyeurhouse_sync(check_head=args.check_head, pages_per_site=args.vh_pages)
+        else:
+            log("[STOP] Supabase unavailable; Voyeur House sync did not start.")
     elif args.daemon:
         run_continuous_daemon(
             session_minutes=args.session_minutes,

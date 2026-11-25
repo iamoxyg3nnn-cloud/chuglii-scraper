@@ -346,6 +346,68 @@ def get_onlyfans_videos(source_site: Optional[str] = "internetchicks", tag: Opti
         return []
 
 
+# ─── Isolated Chinese Category Database Functions ───────────────────────────
+
+def upsert_chinese_video(polished_record: Dict[str, Any]) -> Any:
+    """Inserts or updates a single record strictly in scraper.chinese_videos."""
+    return upsert_chinese_videos_batch([polished_record])
+
+def upsert_chinese_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """
+    Batch inserts or updates records strictly in scraper.chinese_videos.
+    Zero cross-contamination: never touches or falls back to scraper.videos.
+    """
+    if not polished_records:
+        return {"success": True, "count": 0}
+
+    # Isolated RPC strictly targeting scraper.chinese_videos
+    res = call_supabase_rpc("scraper_upsert_chinese_videos", {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+
+    # Fallback to direct supabase-py client strictly on scraper_upsert_chinese_videos
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_chinese_videos", {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Chinese upsert batch failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            print(f"    [!] Database connection glitch ({type(e).__name__}), retrying in {wait_time}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(wait_time)
+
+
+def get_chinese_videos(source_site: Optional[str] = None, content_type: Optional[str] = None, category: Optional[str] = None, tag: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Retrieves stored records strictly from scraper.chinese_videos using RPC bridge.
+    content_type: 'video' (playable HLS), 'torrent' (magnet entries) or None/'all'.
+    category accepts an English category name, the 'chinese' parent tag, or a raw
+    source-site category id (e.g. '20110496').
+    """
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_content_type": content_type,
+        "p_category": category,
+        "p_tag": tag,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset,
+    }
+    try:
+        response = supabase.rpc("scraper_get_chinese_videos", params).execute()
+        return response.data or []
+    except Exception as e:
+        print(f"[!] Failed to fetch chinese videos: {e}")
+        return []
+
+
 # ============================================================================
 # Isolated Voyeur House Database Functions
 # No cross-category dedupe, no fallback to scraper.videos or other tables.
@@ -496,46 +558,59 @@ def get_voyeurhouse_site_video_by_id(site: str, video_id: str) -> Optional[Dict[
 # ─── Supabase Centralized Checkpoints & Progress Tracking ────────────────────
 
 def is_supabase_healthy(timeout: float = 8.0) -> bool:
-    """Checks whether the Supabase REST endpoint is reachable and returning valid responses."""
-    if not SUPABASE_URL:
+    """Checks the scraper's Supabase RPC data plane, not just the REST root.
+
+    The REST root can answer while the database/RPC layer is down, so health is
+    probed through the same checkpoint RPC the scraper relies on for cursors
+    and dedupe state.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
         return False
-    endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/"
+    endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/scraper_get_checkpoint"
     headers = {
-        "apikey": SUPABASE_KEY or "",
-        "authorization": f"Bearer {SUPABASE_KEY}" if SUPABASE_KEY else "",
+        "apikey": SUPABASE_KEY,
+        "authorization": f"Bearer {SUPABASE_KEY}",
+        "content-type": "application/json; charset=utf-8",
         "accept": "application/json"
     }
     try:
         with httpx.Client(timeout=timeout) as client:
-            res = client.get(endpoint, headers=headers)
-            # HTTP 200, 204, or 401 (auth challenge) indicates server & tunnel are online
-            # HTTP 502, 503, 504, 530 indicates Cloudflare Tunnel down / origin offline
-            return res.status_code in (200, 204, 401)
+            res = client.post(endpoint, headers=headers, json={"p_key": "__supabase_health_probe__"})
+        if not 200 <= res.status_code < 300:
+            return False
+        try:
+            data = res.json()
+        except ValueError:
+            return False
+        return isinstance(data, dict) and data.get("success") is not False
     except Exception:
         return False
 
 def wait_for_supabase(max_wait_seconds: int = 600, poll_interval: int = 15) -> bool:
     """
-    Blocks and polls until Supabase becomes healthy and reachable.
-    Designed to handle Cloudflare Tunnel (530 / 1033) restarts or runner boot delays gracefully.
-    Returns True when Supabase is online, or False if max_wait_seconds expires.
+    Blocks and polls until Supabase's scraper RPC is usable.
+    Returns True only when Supabase is online, or False when the wait expires.
+    Callers must honor False by pausing; they must never scrape offline.
     """
     if is_supabase_healthy():
         return True
 
-    print(f"\n[⏳] Supabase is offline or starting up (HTTP 530 / Cloudflare Tunnel reconnecting)...", flush=True)
+    max_wait_seconds = max(0, int(max_wait_seconds))
+    poll_interval = max(1, int(poll_interval))
+    print("\n[⏳] Supabase is offline or starting up (Cloudflare Tunnel / REST RPC unavailable)...", flush=True)
     print(f"    Entering polite standby. Waiting for Supabase to come online (Max wait: {max_wait_seconds // 60}m)...", flush=True)
-    
+
     start_time = time.time()
     while time.time() - start_time < max_wait_seconds:
-        time.sleep(poll_interval)
+        remaining = max_wait_seconds - (time.time() - start_time)
+        time.sleep(min(poll_interval, remaining))
         elapsed = int(time.time() - start_time)
         if is_supabase_healthy():
             print(f"    [✓] Supabase is ONLINE and healthy! (Standby duration: {elapsed}s). Resuming scraper operations.\n", flush=True)
             return True
         print(f"    [Heartbeat] Supabase still booting / connecting... ({elapsed}s elapsed / {max_wait_seconds}s max)", flush=True)
 
-    print(f"    [!] Timeout waiting for Supabase after {max_wait_seconds}s. Proceeding with offline resilience.\n", flush=True)
+    print(f"    [!] Supabase is still unavailable after {max_wait_seconds}s. Scraping remains paused.\n", flush=True)
     return False
 
 def call_supabase_rpc(func_name: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, timeout: float = 15.0) -> Any:

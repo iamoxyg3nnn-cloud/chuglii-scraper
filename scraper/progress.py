@@ -267,6 +267,8 @@ def finalize_status(progress: Dict[str, Any], failed_sites: Iterable[str]) -> st
     """Derives an honest global status from the per-site outcomes."""
     failures = list(failed_sites)
     sites = progress.get("sites")
+    if not isinstance(sites, dict):
+        sites = {}
     if isinstance(sites, dict):
         failures.extend(
             site for site, state in sites.items()

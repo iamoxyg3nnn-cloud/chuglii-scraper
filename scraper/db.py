@@ -382,10 +382,11 @@ def upsert_chinese_videos_batch(polished_records: List[Dict[str, Any]], retries:
             time.sleep(wait_time)
 
 
-def get_chinese_videos(source_site: Optional[str] = None, content_type: Optional[str] = None, category: Optional[str] = None, tag: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+def get_chinese_videos(source_site: Optional[str] = None, content_type: Optional[str] = None, category: Optional[str] = None, tag: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0, group: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Retrieves stored records strictly from scraper.chinese_videos using RPC bridge.
     content_type: 'video' (playable HLS), 'torrent' (magnet entries) or None/'all'.
+    group: subcategory group filter — 'chinese' | 'jav' | 'livestream' | 'western' | 'all'.
     category accepts an English category name, the 'chinese' parent tag, or a raw
     source-site category id (e.g. '20110496').
     """
@@ -399,6 +400,7 @@ def get_chinese_videos(source_site: Optional[str] = None, content_type: Optional
         "p_sort": sort,
         "p_limit": limit,
         "p_offset": offset,
+        "p_group": group,
     }
     try:
         response = supabase.rpc("scraper_get_chinese_videos", params).execute()

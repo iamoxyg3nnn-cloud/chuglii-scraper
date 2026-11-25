@@ -658,7 +658,120 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
         return 0
 
 
-# ─── Unified Cycle Executor ──────────────────────────────────────────────────
+# ─── Chinese Category Ingestion Task ─────────────────────────────────────
+
+def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> int:
+    """Runs the Chinese category (uxj838238) per-category with remote-first state.
+
+    JAV and livestream categories are excluded by the category whitelist.
+    All records go strictly into scraper.chinese_videos.
+    """
+    log("\n" + "=" * 65)
+    log("  [FEED 6/6] Chinese Category Fleet | uxj838238 | Isolated DB")
+    log("=" * 65)
+    try:
+        from scraper.categories.chinese.pipeline import (
+            run_category_crawl,
+            load_checkpoints,
+            save_checkpoints,
+            load_known_ids as load_cn_known_ids,
+            save_known_ids as save_cn_known_ids,
+            load_progress as load_cn_progress,
+            save_progress as save_cn_progress,
+            SITE_KEY as CN_SITE_KEY,
+            DEFAULT_CATEGORIES as CN_CATEGORIES,
+        )
+        from scraper.categories.chinese.categories import category_info as cn_category_info
+        from scraper.progress import finalize_status
+
+        checkpoints = load_checkpoints()
+        known_ids = load_cn_known_ids()
+        progress = load_cn_progress()
+        progress.update({
+            "status": "running",
+            "started_at": progress.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": "head_and_backfill",
+            "categories_requested": CN_CATEGORIES,
+        })
+        save_cn_progress(progress)
+
+        total_new = 0
+        failed_categories: List[str] = []
+
+        for category_id in CN_CATEGORIES:
+            if not cn_category_info(category_id):
+                continue
+            cat_key = f"{CN_SITE_KEY}:{category_id}"
+            cat_state = checkpoints.setdefault(cat_key, {"current_page": 1, "max_pages": 50})
+            try:
+                curr_cursor = int(cat_state.get("current_page", 1) or 1)
+                max_pages = int(cat_state.get("max_pages", 50) or 50)
+
+                if check_head:
+                    h_stats = run_category_crawl(
+                        site_key=CN_SITE_KEY,
+                        category_id=category_id,
+                        start_page=1,
+                        max_pages=1,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.5,
+                        new_only=True,
+                        progress=progress,
+                    )
+                    total_new += int(h_stats.get("upserted", 0) or 0)
+
+                if curr_cursor <= max_pages:
+                    c_stats = run_category_crawl(
+                        site_key=CN_SITE_KEY,
+                        category_id=category_id,
+                        start_page=curr_cursor,
+                        max_pages=pages_per_category,
+                        known_ids=known_ids,
+                        dry_run=False,
+                        jitter=0.8,
+                        progress=progress,
+                    )
+                    total_new += int(c_stats.get("upserted", 0) or 0)
+                    if not c_stats.get("upsert_failed"):
+                        crawled = int(c_stats.get("pages_crawled", 0) or 0)
+                        if crawled > 0:
+                            cat_state["current_page"] = curr_cursor + crawled
+                    else:
+                        failed_categories.append(category_id)
+                    detected_max = c_stats.get("detected_max_pages")
+                    if isinstance(detected_max, int) and detected_max > 0:
+                        cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
+
+                cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cat_progress["status"] = "failed" if category_id in failed_categories else "completed"
+            except Exception as e:
+                failed_categories.append(category_id)
+                cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cat_progress["status"] = "failed"
+                cat_progress["last_error"] = str(e)
+                log(f"  [!] Chinese category [{category_id}] failed in isolation: {e}")
+
+            checkpoints[cat_key] = cat_state
+            save_cn_known_ids(known_ids)
+            save_checkpoints(checkpoints)
+            save_cn_progress(progress)
+
+        cn_status = finalize_status(progress, failed_categories)
+        FEED_STATUS["chinese"] = cn_status
+        progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        progress["totals"] = {"upserted": total_new}
+        save_cn_progress(progress)
+
+        log(f"\n  [OK] Chinese category sync complete. Records appended: {total_new}")
+        return total_new
+    except Exception as e:
+        FEED_STATUS["chinese"] = "failed"
+        log(f"  [!] Chinese sync error: {e}")
+        return 0
+
+
+# ─── Unified Cycle Executor ───────────────────────────────────────────────────
 
 def run_unified_sync_cycle(
     check_head: bool = True,
@@ -666,6 +779,7 @@ def run_unified_sync_cycle(
     jav_pages: int = 1,
     of_pages: int = 1,
     vh_pages: int = 1,
+    cn_pages: int = 1,
     workers: int = 3,
     supabase_deadline: Optional[float] = None,
 ) -> Dict[str, int]:
@@ -688,6 +802,7 @@ def run_unified_sync_cycle(
             "myanmar": 0,
             "onlyfans": 0,
             "voyeurhouse": 0,
+            "chinese": 0,
         }
 
     init_known_id_caches()
@@ -715,6 +830,8 @@ def run_unified_sync_cycle(
     human_jitter(1.5, 2.5)
     of_count = run_feed("onlyfans", run_onlyfans_sync, check_head=check_head, pages_per_site=of_pages)
     vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
+    human_jitter(1.5, 2.5)
+    cn_count = run_feed("chinese", run_chinese_sync, check_head=check_head, pages_per_category=cn_pages)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
     partial_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "partial")
@@ -740,6 +857,7 @@ def run_unified_sync_cycle(
     log(f"  - Myanmar:      {myanmar_count} new videos ingested")
     log(f"  - OnlyFans:     {of_count} new videos ingested")
     log(f"  - Voyeur House: {vh_count} new videos ingested")
+    log(f"  - Chinese:      {cn_count} new items ingested")
     if failed_feeds:
         log(f"  - Failed feeds: {', '.join(failed_feeds)}")
     if partial_feeds:
@@ -752,6 +870,7 @@ def run_unified_sync_cycle(
         "myanmar": myanmar_count,
         "onlyfans": of_count,
         "voyeurhouse": vh_count,
+        "chinese": cn_count,
     }
 
 
@@ -760,7 +879,8 @@ def run_unified_sync_cycle(
 def run_continuous_daemon(
     session_minutes: int = 300,
     interval_seconds: int = 60,
-    workers: int = 3
+    workers: int = 3,
+    cn_pages: int = 1,
 ) -> None:
     """
     Runs a continuous multi-site scraping daemon.
@@ -812,6 +932,7 @@ def run_continuous_daemon(
                 jav_pages=1,
                 of_pages=1,
                 vh_pages=1,
+                cn_pages=cn_pages,
                 workers=workers,
                 supabase_deadline=supabase_handoff_deadline,
             )
@@ -843,8 +964,10 @@ if __name__ == "__main__":
     parser.add_argument("--jav-pages", type=int, default=1, help="Pages of Japanese JAV to scrape per category")
     parser.add_argument("--of-pages", type=int, default=1, help="Pages of OnlyFans to scrape per site")
     parser.add_argument("--vh-pages", type=int, default=1, help="Pages per Voyeur House website to scrape per run")
+    parser.add_argument("--cn-pages", type=int, default=1, help="Pages per Chinese category to scrape per run")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
+    parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
     parser.add_argument("--check-head", action="store_true", default=True, help="Check Page 1 for latest releases")
     args = parser.parse_args()
 
@@ -859,11 +982,17 @@ if __name__ == "__main__":
             run_voyeurhouse_sync(check_head=args.check_head, pages_per_site=args.vh_pages)
         else:
             log("[STOP] Supabase unavailable; Voyeur House sync did not start.")
+    elif args.chinese:
+        if wait_for_supabase_before_cycle():
+            run_chinese_sync(check_head=args.check_head, pages_per_category=args.cn_pages)
+        else:
+            log("[STOP] Supabase unavailable; Chinese sync did not start.")
     elif args.daemon:
         run_continuous_daemon(
             session_minutes=args.session_minutes,
             interval_seconds=args.interval,
-            workers=args.workers
+            workers=args.workers,
+            cn_pages=args.cn_pages,
         )
     else:
         run_unified_sync_cycle(
@@ -872,5 +1001,6 @@ if __name__ == "__main__":
             jav_pages=args.jav_pages,
             of_pages=args.of_pages,
             vh_pages=args.vh_pages,
+            cn_pages=args.cn_pages,
             workers=args.workers
         )

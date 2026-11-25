@@ -19,14 +19,23 @@ scraper/
 │   │   ├── polish.py             # Normalization, tag extraction & stream resolution
 │   │   └── run.bat               # Interactive 1-click batch runner
 │   │
-│   └── japanese/                 # Parent category: Japanese JAV (Source: SupJav -> scraper.japanese_videos)
-│       ├── pipeline.py           # Core ingestion pipeline & server locker resolution
-│       ├── polish.py             # Title cleaning, maker code extraction & formatting
+│   ├── japanese/                 # Parent category: Japanese JAV (Source: SupJav -> scraper.japanese_videos)
+│   │   ├── pipeline.py           # Core ingestion pipeline & server locker resolution
+│   │   ├── polish.py             # Title cleaning, maker code extraction & formatting
+│   │   └── run.bat               # Interactive 1-click batch runner
+│   │
+│   ├── myanmar/ onlyfans/ voyeurhouse/   # Other isolated category folders
+│   │
+│   └── chinese/                  # Parent category: Chinese (Source: uxj.838238.xyz -> scraper.chinese_videos)
+│       ├── categories.py         # 37 whitelisted zones (JAV + livestream zones excluded)
+│       ├── pipeline.py           # Per-zone crawl engine with remote-first checkpoints
+│       ├── polish.py             # CJK-safe slugs, size/resolution parsing, tag extraction
+│       ├── sources/uxj838238.py  # TLS-impersonated fetcher + reversed-base64 payload decoder
 │       └── run.bat               # Interactive 1-click batch runner
 │
 ├── .venv/                        # Python virtual environment (with stealth Fetcher)
 ├── scrapling/                    # Scrapling stealth scraping engine
-├── db.py                         # Supabase database adapter for 'scraper.videos' and 'scraper.japanese_videos'
+├── db.py                         # Supabase database adapter (scraper.videos, scraper.japanese_videos, scraper.chinese_videos, ...)
 ├── schema.sql                    # PostgreSQL schema definition and RPC functions
 ├── apply-scraper-schema.bat      # Helper script to apply database migrations
 ├── pipeline.py                   # Root forwarder to categories/viral-mms/pipeline.py
@@ -52,3 +61,32 @@ scraper\.venv\Scripts\python.exe categories/viral-mms/pipeline.py --category pak
 # Scrape popular feed with deep detail enrichment
 scraper\.venv\Scripts\python.exe categories/viral-mms/pipeline.py --filter popular --pages 1 --enrich
 ```
+
+### Chinese Category (isolated database)
+
+Source: `uxj.838238.xyz` (95da.com network). All records go strictly into
+`scraper.chinese_videos` — never into `scraper.videos`. Zones are isolated by
+`category_id` + `category_group` (`chinese` | `western`). JAV and livestream
+zones are **excluded by design** and are never scraped.
+
+```bash
+# Quick sync: page 1 of every zone, early stop on known content
+scraper\.venv\Scripts\python.exe -X utf8 categories/chinese/pipeline.py --pages 1 --new-only
+
+# Full archive backfill with checkpoints (resumable)
+scraper\.venv\Scripts\python.exe -X utf8 categories/chinese/pipeline.py --full-site --new-only
+
+# Specific zone(s) only
+scraper\.venv\Scripts\python.exe -X utf8 categories/chinese/pipeline.py --categories 20100496,19920497 --pages 2
+
+# 24/7 daemon mode
+scraper\.venv\Scripts\python.exe -X utf8 categories/chinese/pipeline.py --daemon
+
+# Unified scraper: run only the Chinese feed cycle
+scraper\.venv\Scripts\python.exe -X utf8 unified_scraper.py --chinese --cn-pages 1
+```
+
+Interactive runner: `categories\chinese\run.bat`
+
+State files (local mirrors of the remote checkpoints):
+`categories/chinese/checkpoint.json`, `known_post_ids.json`, `progress.json`.

@@ -62,7 +62,7 @@ jobs:
           fi
 
   scrape-fleet:
-    name: Scrape All Feeds (Viral MMS, Japanese JAV, Myanmar, OnlyFans & Voyeur House)
+    name: Scrape All Feeds (Viral MMS, Japanese JAV, Myanmar, OnlyFans, Voyeur House & Chinese)
     needs: guard
     if: needs.guard.outputs.enabled == 'true' && needs.guard.outputs.duplicate != 'true'
     runs-on: ubuntu-latest
@@ -112,6 +112,7 @@ jobs:
           echo "Feed 3: Myanmar (Buu Mal -> scraper.myanmar_videos)"
           echo "Feed 4: OnlyFans Leaks (Multi-Site Aggregator -> scraper.onlyfans_videos)"
           echo "Feed 5: Voyeur House (5 isolated websites -> isolated per-site tables)"
+          echo "Feed 6: Chinese (uxj838238 -> scraper.chinese_videos, 37 zones, JAV/livestream excluded)"
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -142,7 +143,10 @@ jobs:
             scraper/categories/onlyfans/progress.json \
             scraper/categories/voyeurhouse/checkpoint.json \
             scraper/categories/voyeurhouse/known_post_ids.json \
-            scraper/categories/voyeurhouse/progress.json; do
+            scraper/categories/voyeurhouse/progress.json \
+            scraper/categories/chinese/checkpoint.json \
+            scraper/categories/chinese/known_post_ids.json \
+            scraper/categories/chinese/progress.json; do
             [ -f "$f" ] && git add "$f" || true
           done
           if ! git diff --staged --quiet; then

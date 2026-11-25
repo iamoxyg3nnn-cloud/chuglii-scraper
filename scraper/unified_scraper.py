@@ -939,6 +939,18 @@ def run_continuous_daemon(
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
+        # Sprite-storyboard pass: generate timeline hover thumbnails for rows
+        # missing them. Budget-limited so scraping always comes first.
+        thumbs_budget = int(os.getenv("SCRAPER_THUMBS_PER_CYCLE", "2") or 0)
+        if thumbs_budget > 0:
+            try:
+                from scraper.thumbnails import backfill_table
+                done = backfill_table("chinese_videos", limit=thumbs_budget)
+                if done:
+                    log(f"[thumbs] generated {done} storyboard(s) this cycle")
+            except Exception as e:
+                log(f"[thumbs] pass skipped: {e}")
+
         # Human-jittered sleep between cycles with active live heartbeats
         jittered_sleep = max(45.0, interval_seconds + random.uniform(-5.0, 15.0))
         sleep_total = int(jittered_sleep)
@@ -968,8 +980,15 @@ if __name__ == "__main__":
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
+    parser.add_argument("--thumbs", type=int, default=0, metavar="N", help="Generate sprite storyboards for N videos and exit")
     parser.add_argument("--check-head", action="store_true", default=True, help="Check Page 1 for latest releases")
     args = parser.parse_args()
+
+    if args.thumbs:
+        from scraper.thumbnails import backfill_table
+        done = backfill_table("chinese_videos", limit=args.thumbs)
+        log(f"[thumbs] backfill complete: {done} storyboard(s) generated")
+        sys.exit(0)
 
     if args.onlyfans:
         if wait_for_supabase_before_cycle():

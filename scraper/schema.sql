@@ -422,7 +422,7 @@ AS $$
     WITH target AS (
         SELECT
             tags, categories, actors, source_site,
-            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.videos
         WHERE id = p_video_id
         LIMIT 1
@@ -450,10 +450,10 @@ AS $$
               + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
               + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
             ) AS relevance,
-            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.videos v, target t
         WHERE v.id <> p_video_id
-          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+          AND (t.title_key = '' OR lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) <> t.title_key)
     ),
     ranked AS (
         SELECT s.*,
@@ -752,7 +752,7 @@ AS $$
     WITH target AS (
         SELECT
             tags, categories, actors, source_site,
-            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.japanese_videos
         WHERE id = p_video_id
         LIMIT 1
@@ -780,10 +780,10 @@ AS $$
               + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
               + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
             ) AS relevance,
-            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.japanese_videos v, target t
         WHERE v.id <> p_video_id
-          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+          AND (t.title_key = '' OR lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) <> t.title_key)
     ),
     ranked AS (
         SELECT s.*,
@@ -1086,7 +1086,7 @@ AS $$
     WITH target AS (
         SELECT
             tags, categories, actors, source_site,
-            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.myanmar_videos
         WHERE id = p_video_id
         LIMIT 1
@@ -1114,10 +1114,10 @@ AS $$
               + (CASE WHEN v.actors && (SELECT actors FROM target) THEN 3.0 ELSE 0 END)
               + (CASE WHEN v.source_site = (SELECT source_site FROM target) THEN 1.0 ELSE 0 END)
             ) AS relevance,
-            lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) AS title_key
+            lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) AS title_key
         FROM scraper.myanmar_videos v, target t
         WHERE v.id <> p_video_id
-          AND lower(regexp_replace(coalesce(v.title, ''), '[^a-z0-9]+', ' ', 'g')) <> t.title_key
+          AND (t.title_key = '' OR lower(btrim(regexp_replace(coalesce(v.title, ''), '[^[:alnum:]]+', ' ', 'g'))) <> t.title_key)
     ),
     ranked AS (
         SELECT s.*,

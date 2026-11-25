@@ -18,7 +18,6 @@ from typing import Dict, Optional
 MADOUER_TYPES: Dict[str, Dict[str, str]] = {
     # Main nav sections
     "1": {"cn": "麻豆视频", "en": "Madou Videos", "group": "studios"},
-    "2": {"cn": "日本视频", "en": "Japanese Videos", "group": "studios"},
     "3": {"cn": "欧美视频", "en": "Western Videos", "group": "studios"},
     "4": {"cn": "动漫视频", "en": "Anime Videos", "group": "studios"},
     "5": {"cn": "国产视频", "en": "Chinese Amateur", "group": "studios"},
@@ -45,6 +44,7 @@ DEFAULT_CATEGORIES = list(MADOUER_TYPES.keys())
 
 # Sections permanently excluded, with reasons:
 EXCLUDED_TYPES: Dict[str, str] = {
+    "2": "日本视频 — every play page has an empty player (url='') — JAV placeholder pages with no stream; probing all 4,097 pages would be pure waste",
     "19": "site error template, no content",
     "21": "site error template, no content",
     "20": "萝莉社 — excluded on policy grounds regardless of title filtering",

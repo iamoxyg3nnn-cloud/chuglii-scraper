@@ -103,7 +103,13 @@ def polish_studios_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
         "region": raw_item.get("region") or None,
         "region_en": raw_item.get("region_en") or None,
         "resolution": resolution,
-        "categories": ["studios"],
+        # Per-site category tags: base site key + the zone/section id from
+        # raw_payload (injected by the pipeline) so SQL-side chip filters match.
+        "categories": [
+            str(raw_item.get("source_site") or "madouer"),
+            *([str((raw_item.get("raw_payload") or {}).get("category_id"))]
+              if (raw_item.get("raw_payload") or {}).get("category_id") else []),
+        ],
         "tags": raw_item.get("tags") or [],
         "status": "active",
         "published_at": raw_item.get("published_at"),

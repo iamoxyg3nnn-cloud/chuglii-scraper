@@ -939,18 +939,6 @@ def run_continuous_daemon(
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
-        # Sprite-storyboard pass: generate timeline hover thumbnails for rows
-        # missing them. Budget-limited so scraping always comes first.
-        thumbs_budget = int(os.getenv("SCRAPER_THUMBS_PER_CYCLE", "2") or 0)
-        if thumbs_budget > 0:
-            try:
-                from scraper.thumbnails import backfill_table
-                done = backfill_table("chinese_videos", limit=thumbs_budget)
-                if done:
-                    log(f"[thumbs] generated {done} storyboard(s) this cycle")
-            except Exception as e:
-                log(f"[thumbs] pass skipped: {e}")
-
         # Human-jittered sleep between cycles with active live heartbeats
         jittered_sleep = max(45.0, interval_seconds + random.uniform(-5.0, 15.0))
         sleep_total = int(jittered_sleep)

@@ -21,7 +21,10 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from db import get_supabase_client
+try:
+    from db import get_supabase_client  # direct run from scraper/
+except ImportError:
+    from scraper.db import get_supabase_client  # package import (daemon/CI)
 
 TARGET_TILES = 600          # cap tiles per video; interval scales up for long videos
 TILE_EDGE = 160             # max tile edge in px (aspect preserved)
@@ -114,6 +117,9 @@ def generate_sprites(video_url: str, workdir: Path) -> Optional[Dict[str, Any]]:
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-user_agent", USER_AGENT,
+        # Decode keyframes only: ~10-50x faster extraction, exactly what
+        # storyboard thumbnails need (accepted ffmpeg practice for sprites).
+        "-skip_frame", "nokey",
         "-i", video_url,
         "-vf", f"fps=1/{interval},scale={tile_w}:{tile_h},tile={GRID}x{GRID}",
         "-frames:v", str(sheets),
@@ -176,27 +182,38 @@ def process_row(table_name: str, row: Dict[str, Any]) -> bool:
         return store_sprites(table_name, video_id, meta, workdir)
 
 
-def backfill_table(table_name: str, limit: int = 2) -> int:
-    """Generate storyboards for up to `limit` rows missing preview_thumbs."""
+def backfill_table(table_name: str, limit: int = 2, workers: int = 3) -> int:
+    """Generate storyboards for up to `limit` rows missing preview_thumbs.
+
+    Runs ffmpeg extractions in parallel (network + decode bound, so a few
+    concurrent processes multiply throughput on CI runners).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     client = get_supabase_client()
-    res = (
-        client.table(table_name)
-        .select("id, full_video_url")
-        .is_("preview_thumbs", "null")
-        .not_.is_("full_video_url", "null")
-        .order("scraped_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    rows = res.data or []
-    done = 0
-    for row in rows:
+    res = client.rpc("scraper_list_missing_storyboards", {
+        "p_table": table_name, "p_limit": limit,
+    }).execute()
+    rows = [
+        {"id": r["video_id"], "full_video_url": r["video_url"]}
+        for r in (res.data or [])
+    ]
+    if not rows:
+        return 0
+
+    def work(row: Dict[str, Any]) -> tuple[str, bool, str]:
         try:
-            if process_row(table_name, row):
-                done += 1
-                print(f"[thumbs] {table_name}/{row['id']}: storyboard generated")
-            else:
-                print(f"[thumbs] {table_name}/{row['id']}: generation failed")
+            ok = process_row(table_name, row)
+            return row["id"], ok, "ok" if ok else "generation failed"
         except Exception as e:
-            print(f"[thumbs] {table_name}/{row['id']}: error {e}")
+            return row["id"], False, f"error {e}"
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(work, row) for row in rows]
+        for fut in as_completed(futures):
+            vid, ok, msg = fut.result()
+            if ok:
+                done += 1
+            print(f"[thumbs] {table_name}/{vid[:8]}: {msg}")
     return done

@@ -97,22 +97,13 @@ Interactive runner: `categories\chinese\run.bat`
 State files (local mirrors of the remote checkpoints):
 `categories/chinese/checkpoint.json`, `known_post_ids.json`, `progress.json`.
 
-## Timeline hover thumbnails (sprite storyboards)
+## Timeline hover previews (live, opt-in sprite storyboards)
 
-For zero-latency hover previews anywhere on the seek bar, the scraper
-generates sprite storyboards at ingest (`scraper/thumbnails.py`, ffmpeg):
+Timeline hover shows a LIVE muted low-rendition stream playing at the
+hovered position (warm hls.js decoder + 180s forward buffer + immutable
+HTTP caching) - no scrape-time generation involved.
 
-- 1 frame every N seconds (interval auto-scales so a video never exceeds
-  ~600 tiles), scaled to ≤160px tiles, tiled into 10×10 JPEG sheets.
-- Sheets are stored in `scraper.preview_sprite_blobs` (Postgres bytea — no
-  external storage needed) and metadata is stamped on the row's
-  `preview_thumbs` column.
-- The frontend serves sheets via `/api/preview/<table>/<id>/<sheet>` with
-  immutable edge caching; the player renders the matching tile instantly on
-  hover and skips the streaming preview decoder entirely.
-
-Backfill manually with `python scraper/unified_scraper.py --thumbs 5`, or
-let the daemon do it (env `SCRAPER_THUMBS_PER_CYCLE`, default 2 per cycle;
-set 0 to disable). Requires ffmpeg on PATH (preinstalled on GitHub
-ubuntu runners). Currently wired for `chinese_videos`; other tables can be
-enabled by calling `backfill_table("<table>", limit=N)`.
+The optional sprite-storyboard generator (`scraper/thumbnails.py`) is
+disabled by default and never runs in the daemon. It can still be run
+manually with `python scraper/unified_scraper.py --thumbs N` if static
+previews are ever wanted for a table.

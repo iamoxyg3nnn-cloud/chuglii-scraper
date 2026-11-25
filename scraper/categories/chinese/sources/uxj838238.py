@@ -20,6 +20,7 @@ import re
 import json
 import base64
 import time
+import shutil
 import subprocess
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urljoin
@@ -272,35 +273,45 @@ def _extract_screenshots(html_block: str, limit: int = 24) -> List[str]:
     return out
 
 
-def _probe_hls_resolution(hls_url: str, timeout: int = 30) -> Optional[Tuple[int, int]]:
+def _probe_hls_resolution(hls_url: str, timeout: int = 25) -> Optional[Tuple[int, int]]:
     """Probes the real rendition resolution of an HLS stream with ffprobe.
 
     The site serves exactly one rendition per video (verified: play.m3u8 has
     no master variants and zone=2/3 return 'file lost'), so this captures the
     only - and therefore highest - quality available. Direct-to-CDN with a
-    browser UA; ffprobe reads the playlist + first segment only.
+    browser UA; ffprobe reads the playlist + first segment only. One retry
+    absorbs transient CDN hiccups; a probe that fails twice falls back to
+    the generic 'HD' label rather than a fake resolution.
     """
     if not hls_url:
         return None
-    try:
-        proc = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height",
-                "-of", "csv=p=0",
-                "-analyzeduration", "1500000", "-probesize", "1500000",
-                hls_url,
-            ],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            return int(parts[0]), int(parts[1])
-    except Exception:
-        pass
+    if not shutil.which("ffprobe"):
+        # Missing binary on the host: log loudly instead of silently stamping
+        # fallback labels on every video (this is how the fake '720p HD'
+        # regression would creep back in).
+        print("    [uxj838238] WARNING: ffprobe not found on PATH; quality probing disabled")
+        return None
+    for attempt in (1, 2):
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height",
+                    "-of", "csv=p=0",
+                    "-analyzeduration", "1500000", "-probesize", "1500000",
+                    hls_url,
+                ],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            line = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                return int(parts[0]), int(parts[1])
+        except Exception as e:
+            if attempt == 2:
+                print(f"    [uxj838238] ffprobe failed twice for {hls_url[:80]}: {e}")
     return None
 
 

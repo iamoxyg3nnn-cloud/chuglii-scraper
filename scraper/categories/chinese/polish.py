@@ -54,24 +54,27 @@ def parse_size_to_mb(size_label: Optional[str]) -> Optional[int]:
 
 
 def _quality_from_resolution(resolution: Optional[str]) -> tuple:
-    """Maps '1280x720'-style strings to the standard quality label/score."""
+    """Maps a resolution string to the standard quality label/score.
+
+    Accepts both '1280x720'-style dims and '1080p'-style labels (the site's
+    torrent 'tr' field uses the latter). Uses the min-dimension "p"
+    convention so portrait (592x1280) and landscape (1280x592) both read as
+    '592p', matching the ffprobe-probed labels used for videos. Unknown
+    formats fall back to the generic 'HD' label, never a fake resolution.
+    """
     if not resolution:
-        return "720p HD", 720
-    m = re.search(r"(\d{3,4})\s*[x×*]\s*(\d{3,4})", str(resolution))
-    if not m:
-        return "720p HD", 720
-    h = int(m.group(2))
-    if h >= 2160:
-        return "2160p 4K", 2160
-    if h >= 1440:
-        return "1440p HD", 1440
-    if h >= 1080:
-        return "1080p Full HD", 1080
-    if h >= 720:
-        return "720p HD", 720
-    if h >= 480:
-        return "480p SD", 480
-    return "480p SD", 480
+        return "HD", 720
+    text = str(resolution).strip().lower()
+    m = re.search(r"(\d{3,4})\s*[x×*]\s*(\d{3,4})", text)
+    if m:
+        # "p" value = smaller dimension (portrait/landscape agnostic)
+        p = min(int(m.group(1)), int(m.group(2)))
+    else:
+        m2 = re.search(r"(\d{3,4})\s*p", text)
+        if not m2:
+            return "HD", 720
+        p = int(m2.group(1))
+    return f"{p}p", p
 
 
 def polish_chinese_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,7 +115,9 @@ def polish_chinese_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
             duration_seconds = None
         duration_formatted = raw_item.get("duration_formatted")
     else:
-        quality_label = str(raw_item.get("quality_label") or "720p HD")
+        # Probed real resolution from _enrich_video; 'HD' fallback (never a
+        # fake '720p HD') when the probe could not run.
+        quality_label = str(raw_item.get("quality_label") or "HD")
         quality_score = int(raw_item.get("quality_score") or 720)
         duration_seconds = None
         duration_formatted = None

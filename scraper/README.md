@@ -69,6 +69,12 @@ Source: `uxj.838238.xyz` (95da.com network). All records go strictly into
 `category_id` + `category_group` (`chinese` | `western`). JAV and livestream
 zones are **excluded by design** and are never scraped.
 
+Titles are stored twice: `title` keeps the original CJK source title, and
+`title_en` holds the Google-translated English title (free gtx endpoint,
+persistent cache in `translation_cache.json`). The frontend displays
+`title_en` and site search matches both. Re-translate existing rows with
+`translate_backfill.py`.
+
 ```bash
 # Quick sync: page 1 of every zone, early stop on known content
 scraper\.venv\Scripts\python.exe -X utf8 categories/chinese/pipeline.py --pages 1 --new-only

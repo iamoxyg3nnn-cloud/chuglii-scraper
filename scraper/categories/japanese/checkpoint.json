@@ -3,7 +3,8 @@
     "amateur": {
       "completed": false,
       "max_pages": 1655,
-      "current_page": 730
+      "stall_count": 0,
+      "current_page": 895
     },
     "popular": {
       "completed": true,
@@ -13,21 +14,24 @@
     "censored-jav": {
       "completed": false,
       "max_pages": 6555,
-      "current_page": 729
+      "stall_count": 0,
+      "current_page": 894
     },
     "uncensored-jav": {
       "completed": false,
       "max_pages": 1958,
-      "current_page": 730
+      "stall_count": 0,
+      "current_page": 895
     },
     "reducing-mosaic": {
       "completed": false,
       "max_pages": 4692,
-      "current_page": 729
+      "stall_count": 0,
+      "current_page": 894
     }
   },
   "stats": {
-    "last_sync": "2026-11-24T22:59:51Z",
-    "total_ingested": 13536
+    "last_sync": "2026-11-25T10:38:39Z",
+    "total_ingested": 29221
   }
 }

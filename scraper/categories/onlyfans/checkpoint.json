@@ -1,15 +1,15 @@
 {
   "internetchicks": {
     "max_pages": 514,
-    "current_page": 239
+    "current_page": 403
   },
   "influencersgonewild": {
-    "max_pages": 239,
-    "current_page": 239
+    "max_pages": 404,
+    "current_page": 404
   },
   "sheeshfans": {
     "max_pages": 789,
-    "current_page": 239
+    "current_page": 404
   },
   "total_ingested": 0,
   "total_merged": 0,
@@ -17,5 +17,5 @@
     "max_pages": 3095,
     "current_page": 96
   },
-  "timestamp": "2026-11-24 23:00:35"
+  "timestamp": "2026-11-25 10:39:14"
 }

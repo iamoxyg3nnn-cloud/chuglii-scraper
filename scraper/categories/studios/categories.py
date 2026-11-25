@@ -237,6 +237,10 @@ MADOUHD_CATEGORIES: Dict[str, Dict[str, str]] = {
     "cate171": {"cn": "裸舞", "en": "Nude Dance", "group": "studios"},
     "cate172": {"cn": "口交", "en": "Blowjob", "group": "studios"},
     "cate174": {"cn": "混剪", "en": "Compilations", "group": "studios"},
+    # Catch-all superset, deliberately LAST in crawl order: after every real
+    # zone is done it only picks up videos no real zone covered, so labels
+    # stay correct and nothing on the site is missed.
+    "cate35": {"cn": "全部", "en": "All (catch-all)", "group": "studios"},
 }
 
 MADOUHD_EXCLUDED: Dict[str, str] = {
@@ -246,7 +250,6 @@ MADOUHD_EXCLUDED: Dict[str, str] = {
     "cate25": "人兽激情 — bestiality theme, excluded on policy grounds",
     "cate32": "抖音风 — douyin reuploads, excluded as NCII/reupload risk",
     "cate33": "裸贷曝光 — nude-debt leak exposés, excluded as NCII risk",
-    "cate35": "全部 — sitewide superset listing, excluded to avoid duplicate rows",
     "cate96": "萝莉社 — hard site-wide exclusion",
     "cate165": "抖音 — douyin reupload tag, excluded as NCII/reupload risk",
     "cate169": "学生妹 — schoolgirl tag, excluded as minor-adjacent NCII risk",

@@ -294,6 +294,10 @@ def run_category_crawl(
 
             try:
                 polished = polish_studios_record(raw)
+                # Carry the source zone id in raw_payload so SQL-side category
+                # filters (e.g. the Chinese category union RPC) can filter by
+                # zone without a dedicated column.
+                polished["raw_payload"] = {"category_id": category_id}
                 # Videos must have a playable stream.
                 if not polished.get("full_video_url"):
                     unresolved_titles.append(str(polished.get("title") or "untitled"))

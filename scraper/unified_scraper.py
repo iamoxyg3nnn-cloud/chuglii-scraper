@@ -1152,6 +1152,30 @@ def run_continuous_daemon(
         if check_head:
             last_head_check = now
 
+        # Deep-first: when the persistent flag is active, grind the archive
+        # backlog BEFORE the regular feed cycle. Previously the grind only ran
+        # AFTER feeds 1-7, so a newly added deep target (e.g. madouhd's 152
+        # zones) was starved behind ~30+ minutes of other feeds every session
+        # - and any session cancelled mid-cycle never reached it at all.
+        try:
+            from scraper.deep_backfill import get_flag, run_deep_backfill
+
+            _flag = get_flag()
+            if _flag.get("active"):
+                _targets = _flag.get("targets") or []
+                log(f"\n[DEEP] Deep backfill ACTIVE for: {', '.join(_targets) or 'none'} - grinding BEFORE feed cycle")
+                run_deep_backfill(
+                    targets=_targets,
+                    deadline=supabase_handoff_deadline - 120,
+                    chunk_pages=deep_chunk_pages,
+                )
+                if time.time() >= supabase_handoff_deadline - 180:
+                    log("\n[HANDOFF] Deep backfill consumed the session. Exiting cleanly.")
+                    cleanup_orphan_browsers()
+                    break
+        except Exception as e:
+            log(f"[!] Deep backfill error: {e}")
+
         log(f"\n>>> CYCLE #{cycle} | Session elapsed: {elapsed / 60:.1f}m | Remaining: {remaining / 60:.1f}m <<<")
         try:
             run_unified_sync_cycle(
@@ -1169,34 +1193,9 @@ def run_continuous_daemon(
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
-        # Deep-backfill grind: when the persistent flag is active, spend every
-        # remaining second of the session crawling the archive backlog (all
-        # zones, chunk after chunk) instead of idling between cycles. The flag
-        # lives in the remote checkpoint store, so chained sessions keep
-        # grinding until every zone reports complete, then auto-deactivate.
-        deep_ran = False
-        try:
-            from scraper.deep_backfill import get_flag, run_deep_backfill
-
-            flag = get_flag()
-            if flag.get("active"):
-                targets = flag.get("targets") or []
-                log(f"\n[DEEP] Deep backfill ACTIVE for: {', '.join(targets) or 'none'}")
-                run_deep_backfill(
-                    targets=targets,
-                    deadline=supabase_handoff_deadline - 120,
-                    chunk_pages=deep_chunk_pages,
-                )
-                deep_ran = True
-        except Exception as e:
-            log(f"[!] Deep backfill error: {e}")
-
-        if deep_ran:
-            # The grind consumed the rest of the session; exit cleanly so the
-            # chained successor takes over.
-            log("\n[HANDOFF] Deep backfill consumed the session. Exiting cleanly.")
-            cleanup_orphan_browsers()
-            break
+        # (Deep-backfill grind is handled deep-first at the top of the cycle,
+        # so no post-cycle pass is needed: if the flag is still active and
+        # session time remains, the next iteration grinds again.)
 
         # Human-jittered sleep between cycles with active live heartbeats
         jittered_sleep = max(45.0, interval_seconds + random.uniform(-5.0, 15.0))

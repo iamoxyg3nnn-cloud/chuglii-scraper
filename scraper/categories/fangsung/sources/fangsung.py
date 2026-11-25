@@ -56,6 +56,34 @@ _RE_VAR_SOURCE = re.compile(r"var\s+source\s*=\s*\"([^\"]+\.m3u8)\"")
 _RE_TAG_CHIP = re.compile(r"<a[^>]*href=\"https://www\.fangsung\.com/a%E7%89%87/search/([^\"]+)\"[^>]*class=\"btn btn-outline-light btn-sm[^\"]*\"[^>]*>([^<]+)</a>")
 _RE_DATE_IN_PATH = re.compile(r"/(\d{4}-\d{2}-\d{2})/")
 
+# Stream CDNs observed on live detail pages (verified 2026-11-25 by probing
+# manifests from every region term): all of these return real #EXTM3U bodies.
+# kk2.apianmeng.com is DEAD (serves a parked "New API" HTML app) — the site
+# still publishes it on some (anime-path) detail pages. fangsung rotates CDN
+# subdomains (cdnYYYYMMDD.apianmeng.com), so the check is prefix/suffix based,
+# never a fixed host list.
+_STREAM_HOST_SUFFIXES_OK = ("xianshipian.com", "aomcyou.site", "apianmeng.com", "atukjhesk.com")
+_STREAM_HOST_DEAD = ("kk2.apianmeng.com",)
+
+
+def _stream_host(url: str) -> str:
+    m = re.match(r"^https?://([^/?#]+)/", url or "")
+    return m.group(1).lower() if m else ""
+
+
+def _stream_is_live(url: str) -> bool:
+    """Cheap manifest probe: a live HLS entry point returns an #EXTM3U body.
+    Dead/parked hosts return HTML regardless of status code."""
+    try:
+        import subprocess as _sp
+        r = _sp.run(
+            ["curl", "-s", "--max-time", "12", "-A", UA, url],
+            capture_output=True, text=True, timeout=18,
+        )
+        return r.stdout.lstrip().startswith("#EXTM3U")
+    except Exception:
+        return False
+
 
 def _get_fetcher():
     if Fetcher is None:
@@ -245,6 +273,21 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     if not stream:
         # Fallback: derive from the thumbnail path (verified 1:1 mapping).
         stream = derive_stream_url(card.get("thumbnail_url") or "")
+
+    # Dead-host / unknown-host validation. The site occasionally publishes
+    # parked CDNs (kk2.apianmeng.com) that return HTML instead of HLS. If the
+    # extracted host is not a known-good CDN, probe the manifest once; if it
+    # is not a live HLS entry point, try the thumb-derived URL instead, and
+    # only give up (empty stream -> row stays out of the UI) when neither
+    # works.
+    host = _stream_host(stream)
+    if stream and (host in _STREAM_HOST_DEAD or not host.endswith(_STREAM_HOST_SUFFIXES_OK)):
+        if not _stream_is_live(stream):
+            derived = derive_stream_url(card.get("thumbnail_url") or "")
+            if derived and derived != stream and _stream_is_live(derived):
+                stream = derived
+            else:
+                stream = ""
     merged["full_video_url"] = stream or None
     merged["video_mime_type"] = "application/x-mpegURL" if stream else None
     merged["clean_thumbnail_url"] = card.get("thumbnail_url")

@@ -7,6 +7,8 @@ Records are persisted strictly into scraper.chinese_videos via its RPC bridge.
 import re
 from typing import Dict, Any, List, Optional
 
+from .translate import translate_to_en
+
 
 def clean_chinese_title(raw_title: str) -> str:
     """Normalizes whitespace and strips site-brand noise from titles."""
@@ -77,6 +79,8 @@ def polish_chinese_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     Polishes a raw scraped uxj838238 item into a schema-compliant record for
     scraper.chinese_videos. Videos carry an HLS m3u8 in full_video_url;
     torrents carry magnet/torrent metadata and no playable URL.
+    Titles are translated to English (Google Translate) into title_en; the
+    original CJK title is preserved in title for source fidelity.
     """
     post_id = str(raw_item.get("source_post_id") or "")
     content_type = str(raw_item.get("content_type") or "video").strip() or "video"
@@ -118,6 +122,7 @@ def polish_chinese_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
         "source_post_id": post_id,
         "content_type": content_type,
         "title": cleaned_title[:255],
+        "title_en": (translate_to_en(cleaned_title) or "")[:255] if cleaned_title else "",
         "slug": slug[:255],
         "detail_url": raw_item.get("detail_url") or "",
         "full_video_url": raw_item.get("full_video_url") or None,

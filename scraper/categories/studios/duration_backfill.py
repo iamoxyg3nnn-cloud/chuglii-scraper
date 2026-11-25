@@ -85,6 +85,8 @@ def run_site(site: str, limit: int) -> None:
         try:
             if site == "dasj91":
                 dur = src.enrich_detail(dict(row)).get("duration_seconds")
+            elif site == "madouhd":
+                dur = src.enrich_detail(dict(row)).get("duration_seconds")
             else:
                 # madouer stores a live m3u8 in full_video_url - probe it directly
                 dur = _sum_playlist_duration(str(row.get("full_video_url") or ""))
@@ -117,7 +119,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=100000)
     parser.add_argument("--site", type=str, default="", help="madouer | dasj91 | empty for both")
     args = parser.parse_args()
-    sites = [args.site] if args.site else ["madouer", "dasj91"]
+    sites = [args.site] if args.site else ["madouer", "dasj91", "madouhd"]
     for site in sites:
         run_site(site, args.limit)
     return 0

@@ -1,0 +1,189 @@
+"""
+madouhd.cc source — Phase C.
+
+Custom PHP site (stui-vodlist theme, same UI kit as madouer). Plain Fetcher
+with stealthy headers works; no heavy anti-bot.
+
+Listing  : /category/{cateN}/            (page 1)
+           /category/{cateN}/{page}/     (deeper pages)
+Cards    : li.stui-vodlist__item > a.stui-vodlist__thumb[href=/video/{id}/]
+           img.lazy[data-original=thumb] + h4.stui-vodlist__title a[title]
+Detail   : div#article-videos data-url="/video/{date}/{x}/{id}/{hash}.m3u8"
+           data-cdnline="https://fgds54gg.sxtmo.com"
+           full stream = cdnline + data-url  (direct HLS, no auth token —
+           same store-the-stream-URL strategy as madouer)
+
+Thumbs and streams share the fgds54gg.sxtmo.com CDN.
+"""
+from __future__ import annotations
+
+import json
+import re
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
+
+from scraper.categories.studios.categories import category_info, is_site_enabled
+
+try:
+    from scrapling.fetchers import Fetcher
+except Exception:  # pragma: no cover
+    Fetcher = None  # type: ignore
+
+BASE_URL = "https://madouhd.cc"
+SOURCE_SITE = "madouhd"
+STREAM_HOST = "fgds54gg.sxtmo.com"
+
+_RE_CARD = re.compile(
+    r'<a class="stui-vodlist__thumb[^"]*"\s+href="(/video/(\d+)/)"[^>]*title="([^"]*)"[^>]*>'
+    r'.*?<img[^>]*data-original="([^"]+)"',
+    re.S,
+)
+_RE_PLAYER = re.compile(
+    r'id="article-videos"[^>]*data-url="(/video/[^"]+\.m3u8)"[^>]*data-cdnline="([^"]+)"',
+    re.S,
+)
+_RE_DATE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+_RE_VIEWS = re.compile(r"([\d.]+)\s*([KM万]?)\s*观看")
+_RE_TAG_LINKS = re.compile(r'href="/category/cate\d+/"[^>]*>([^<]{1,24})</a>')
+_RE_PAGE_LINKS = re.compile(r"/category/%s/(\d+)/" % r"(?:cate\d+)")
+
+
+def is_enabled(category_id: str) -> bool:
+    return is_site_enabled("madouhd", category_id)
+
+
+def fetch_page(url: str, timeout: int = 30, retries: int = 3) -> Optional[Any]:
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = Fetcher.get(url, stealthy_headers=True, timeout=timeout)
+            status = getattr(resp, "status", 0)
+            if status == 200:
+                return resp
+            if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            last_err = f"HTTP {status}"
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+    if last_err:
+        print(f"    [madouhd] fetch failed {url[:90]}: {last_err}")
+    return None
+
+
+def _abs(url: Optional[str]) -> str:
+    if not url:
+        return ""
+    u = str(url).strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        u = "https:" + u
+    if u.startswith("/"):
+        u = urljoin(BASE_URL, u)
+    return u
+
+
+def scrape_listing(category_id: str, page_num: int) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    cate = str(category_id).strip()
+    if not is_enabled(cate):
+        print(f"    [madouhd] category '{cate}' is not whitelisted. Skipping.")
+        return [], None
+
+    info = category_info(cate)
+    page_num = max(1, int(page_num))
+    url = f"{BASE_URL}/category/{cate}/" if page_num == 1 else f"{BASE_URL}/category/{cate}/{page_num}/"
+    resp = fetch_page(url)
+    if not resp:
+        return [], None
+
+    html = getattr(resp, "html_content", "") or ""
+    if len(html) < 5000 or "stui-vodlist" not in html:
+        return [], None
+
+    items: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for m in _RE_CARD.finditer(html):
+        play_path, vod_id, title_attr, thumb = m.groups()
+        if vod_id in seen_ids:
+            continue
+        seen_ids.add(vod_id)
+        title = re.sub(r"\s+", " ", title_attr).strip()
+        if not title:
+            continue
+        items.append({
+            "source_site": SOURCE_SITE,
+            "source_post_id": vod_id,
+            "content_type": "video",
+            "title": title,
+            "detail_url": _abs(play_path),
+            "thumbnail_url": _abs(thumb),
+            "clean_thumbnail_url": _abs(thumb),
+            "region": info.get("cn") or "",
+            "region_en": info.get("en") or "",
+            "published_at": None,  # filled at enrich time
+        })
+
+    # Pagination: highest linked /category/{cate}/{n}/ page for THIS category
+    pages = [int(p) for p in re.findall(r"/category/%s/(\d+)/" % re.escape(cate), html)]
+    detected_max = max(pages) if pages else None
+    return items, detected_max
+
+
+def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetches the play page, extracts the direct HLS URL, tags and date.
+
+    Sets `dead` when the play page is unreachable so the pipeline keeps the
+    item unmarked for retry instead of storing junk.
+    """
+    merged = dict(card)
+    resp = fetch_page(card.get("detail_url"), timeout=25, retries=2)
+    if not resp:
+        merged["dead"] = True
+        return merged
+
+    html = getattr(resp, "html_content", "") or ""
+    m = _RE_PLAYER.search(html)
+    if not m:
+        merged["dead"] = True
+        return merged
+
+    stream = (m.group(2).rstrip("/") + m.group(1)).strip()
+    merged["full_video_url"] = stream
+
+    md = _RE_DATE.search(html)
+    if md:
+        try:
+            merged["published_at"] = (
+                datetime.strptime(md.group(1), "%Y-%m-%d %H:%M:%S")
+                .replace(tzinfo=timezone.utc)
+                .isoformat()
+            )
+        except ValueError:
+            merged["published_at"] = None
+
+    mv = _RE_VIEWS.search(html)
+    if mv:
+        try:
+            num = float(mv.group(1))
+            unit = mv.group(2)
+            if unit == "K":
+                num *= 1_000
+            elif unit == "M":
+                num *= 1_000_000
+            elif unit == "万":
+                num *= 10_000
+            merged["views"] = int(num)
+        except ValueError:
+            pass
+
+    tags = [t.strip() for t in _RE_TAG_LINKS.findall(html) if t.strip()]
+    if tags:
+        merged["tags"] = tags[:8]
+
+    return merged

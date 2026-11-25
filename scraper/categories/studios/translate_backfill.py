@@ -67,7 +67,7 @@ def main() -> int:
     args = parser.parse_args()
 
     total_ok = total_fail = 0
-    for site in ("madouer", "dasj91"):
+    for site in ("madouer", "dasj91", "madouhd"):
         pending = fetch_pending(args.limit, site)
         print(f"[*] [{site}] {len(pending)} rows need English titles")
         if not pending:

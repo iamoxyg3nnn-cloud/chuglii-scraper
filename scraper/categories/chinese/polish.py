@@ -69,6 +69,10 @@ def _quality_from_resolution(resolution: Optional[str]) -> tuple:
     if m:
         # "p" value = smaller dimension (portrait/landscape agnostic)
         p = min(int(m.group(1)), int(m.group(2)))
+        if p <= 0:
+            # '0x0' means the probe could not read the stream (dead/expired
+            # CDN URL) - never render a bogus '0p' label.
+            return "HD", 720
     else:
         m2 = re.search(r"(\d{3,4})\s*p", text)
         if not m2:

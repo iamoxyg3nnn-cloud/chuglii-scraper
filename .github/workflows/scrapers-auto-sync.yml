@@ -132,6 +132,13 @@ jobs:
             --interval "$INTERVAL_SECS" \
             --workers 4
 
+      - name: Backfill English Titles (Chinese safety net)
+        # Translation now happens at ingest, but this catches any rows that
+        # landed untranslated (ingest failures, older sessions) so the
+        # English-only UI never shows CJK fallbacks.
+        if: ${{ !cancelled() }}
+        run: python -X utf8 scraper/categories/chinese/translate_backfill.py --limit 2000 || true
+
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can
         # poison known-ID caches, and cancellation must remain a hard stop.

@@ -37,7 +37,7 @@ DEAD_HOST_SUBSTRINGS = (
     "sbanh.", "sblanh.", "sbspeed.", "sblona.", "sbrapid.", "sbface.",
     "sbhight.", "sbrity.", "sbsonic.", "likessb.", "lvturbo.",
     "slwatch.", "sltube.", "slmaxed.", "streamlare.",
-    "fembed.", "upvideo.", "short.ink", "mixdrop.vc",
+    "fembed.", "upvideo.", "short.ink", "mixdrop.vc", "mixdrop.ch",
 )
 
 CF_CHALLENGED_HOSTS = (

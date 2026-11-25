@@ -34,6 +34,7 @@ for p in [str(PROJECT_ROOT), str(SCRAPER_DIR), str(CURRENT_DIR)]:
 
 try:
     from scraper.categories.chinese.polish import polish_chinese_record
+    from scraper.categories.chinese.translate import translate_to_en, save_cache as save_translation_cache
     from scraper.categories.chinese.sources import SOURCES
     from scraper.categories.chinese.categories import (
         ALL_ENABLED_CATEGORIES,
@@ -42,6 +43,7 @@ try:
     )
 except ImportError:
     from polish import polish_chinese_record
+    from translate import translate_to_en, save_cache as save_translation_cache
     from sources import SOURCES
     from categories import ALL_ENABLED_CATEGORIES, DEFAULT_CATEGORIES, category_info
 
@@ -322,6 +324,15 @@ def run_category_crawl(
 
             try:
                 polished = polish_chinese_record(raw)
+                # English title at ingest (site is English-only; CJK kept in
+                # `title`, English in `title_en`). Best-effort: failures leave
+                # title_en empty and the backfill script catches stragglers.
+                try:
+                    en = translate_to_en(str(polished.get("title") or ""))
+                    if en:
+                        polished["title_en"] = en
+                except Exception:
+                    pass
                 # Videos must have a playable stream; torrents must have a magnet or torrent file.
                 if polished.get("content_type") == "video" and not polished.get("full_video_url"):
                     unresolved_titles.append(str(polished.get("title") or "untitled"))
@@ -359,6 +370,12 @@ def run_category_crawl(
                 upsert_succeeded = rpc_result_succeeded(result)
                 if upsert_succeeded:
                     stats["upserted"] += len(final_batch)
+                    # Persist the translation cache so titles are never
+                    # re-translated across runs.
+                    try:
+                        save_translation_cache()
+                    except Exception:
+                        pass
                 else:
                     stats["errors"] += 1
                     stats["last_error"] = str(result.get("error") or result)

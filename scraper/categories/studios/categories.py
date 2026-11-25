@@ -109,6 +109,11 @@ MADOUHD_CATEGORIES: Dict[str, Dict[str, str]] = {
     "cate29": {"cn": "VR影片", "en": "VR Films", "group": "studios"},
     "cate30": {"cn": "18禁三级", "en": "Softcore III", "group": "studios"},
     "cate31": {"cn": "伪娘人妖", "en": "Femboy & Ladyboy", "group": "studios"},
+    "cate9": {"cn": "强奸迷奸", "en": "Forced Fantasy", "group": "studios"},
+    "cate27": {"cn": "真实破处", "en": "Defloration", "group": "studios"},
+    "cate71": {"cn": "重口-尿", "en": "Watersports", "group": "studios"},
+    "cate72": {"cn": "重口-屎", "en": "Scat", "group": "studios"},
+    "cate173": {"cn": "猎奇", "en": "Bizarre Extreme", "group": "studios"},
     "cate36": {"cn": "kittyxkum", "en": "kittyxkum", "group": "studios"},
     "cate37": {"cn": "桥本香菜", "en": "Hashimoto Kana", "group": "studios"},
     "cate38": {"cn": "玩偶姐姐", "en": "Doll Sister", "group": "studios"},
@@ -236,20 +241,15 @@ MADOUHD_CATEGORIES: Dict[str, Dict[str, str]] = {
 
 MADOUHD_EXCLUDED: Dict[str, str] = {
     "cate7": "网红黑料 — real-person leak/scandal content, excluded as NCII risk",
-    "cate9": "强奸迷奸 — rape/drug theme, excluded on policy grounds",
     "cate10": "校园猛料 — campus content, excluded as NCII risk",
     "cate16": "摄像偷拍 — hidden-camera/voyeur content, excluded as NCII risk",
     "cate25": "人兽激情 — bestiality theme, excluded on policy grounds",
-    "cate27": "真实破处 — real-defloration claim, excluded on policy grounds",
     "cate32": "抖音风 — douyin reuploads, excluded as NCII/reupload risk",
     "cate33": "裸贷曝光 — nude-debt leak exposés, excluded as NCII risk",
     "cate35": "全部 — sitewide superset listing, excluded to avoid duplicate rows",
-    "cate71": "重口-尿 — urine/scat extreme, excluded on policy grounds",
-    "cate72": "重口-屎 — scat extreme, excluded on policy grounds",
     "cate96": "萝莉社 — hard site-wide exclusion",
     "cate165": "抖音 — douyin reupload tag, excluded as NCII/reupload risk",
     "cate169": "学生妹 — schoolgirl tag, excluded as minor-adjacent NCII risk",
-    "cate173": "猎奇 — gore/shock content, excluded on policy grounds",
 }
 
 ALL_ZONES = (

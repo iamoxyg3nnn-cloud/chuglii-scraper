@@ -1,44 +1,44 @@
 {
   "total_ingested": 0,
   "fangsung:日本AV": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:台湾": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:中国AV": {
-    "current_page": 2,
-    "max_pages": 50
+    "max_pages": 78,
+    "current_page": 10
   },
   "fangsung:国产": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:欧美": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:韩国": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:香港": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:泰国": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:越南": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
   "fangsung:大陆": {
-    "current_page": 1,
-    "max_pages": 50
+    "max_pages": 50,
+    "current_page": 1
   },
-  "timestamp": "2026-11-25 19:23:36"
+  "timestamp": "2026-11-25 20:41:38"
 }

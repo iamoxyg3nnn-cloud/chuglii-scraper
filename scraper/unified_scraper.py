@@ -996,6 +996,7 @@ def run_continuous_daemon(
     workers: int = 3,
     cn_pages: int = 1,
     fs_pages: int = 1,
+    deep_chunk_pages: int = 20,
 ) -> None:
     """
     Runs a continuous multi-site scraping daemon.
@@ -1055,6 +1056,35 @@ def run_continuous_daemon(
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")
 
+        # Deep-backfill grind: when the persistent flag is active, spend every
+        # remaining second of the session crawling the archive backlog (all
+        # zones, chunk after chunk) instead of idling between cycles. The flag
+        # lives in the remote checkpoint store, so chained sessions keep
+        # grinding until every zone reports complete, then auto-deactivate.
+        deep_ran = False
+        try:
+            from scraper.deep_backfill import get_flag, run_deep_backfill
+
+            flag = get_flag()
+            if flag.get("active"):
+                targets = flag.get("targets") or []
+                log(f"\n[DEEP] Deep backfill ACTIVE for: {', '.join(targets) or 'none'}")
+                run_deep_backfill(
+                    targets=targets,
+                    deadline=supabase_handoff_deadline - 120,
+                    chunk_pages=deep_chunk_pages,
+                )
+                deep_ran = True
+        except Exception as e:
+            log(f"[!] Deep backfill error: {e}")
+
+        if deep_ran:
+            # The grind consumed the rest of the session; exit cleanly so the
+            # chained successor takes over.
+            log("\n[HANDOFF] Deep backfill consumed the session. Exiting cleanly.")
+            cleanup_orphan_browsers()
+            break
+
         # Human-jittered sleep between cycles with active live heartbeats
         jittered_sleep = max(45.0, interval_seconds + random.uniform(-5.0, 15.0))
         sleep_total = int(jittered_sleep)
@@ -1082,6 +1112,7 @@ if __name__ == "__main__":
     parser.add_argument("--vh-pages", type=int, default=1, help="Pages per Voyeur House website to scrape per run")
     parser.add_argument("--cn-pages", type=int, default=1, help="Pages per Chinese category to scrape per run")
     parser.add_argument("--fs-pages", type=int, default=1, help="Pages per fangsung region term to scrape per run")
+    parser.add_argument("--deep-chunk-pages", type=int, default=20, help="Pages per zone per deep-backfill chunk (default: 20)")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
@@ -1124,6 +1155,7 @@ if __name__ == "__main__":
             workers=args.workers,
             cn_pages=args.cn_pages,
             fs_pages=args.fs_pages,
+            deep_chunk_pages=args.deep_chunk_pages,
         )
     else:
         run_unified_sync_cycle(

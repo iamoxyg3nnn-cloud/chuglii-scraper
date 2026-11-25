@@ -16,6 +16,10 @@ on:
         description: 'Interval between scan cycles in seconds (default: 60 = 1m)'
         required: false
         default: '60'
+      deep_backfill:
+        description: 'Activate deep backfill until archives are fully indexed (none | chinese | fangsung | all)'
+        required: false
+        default: 'none'
   schedule:
     # Watchdog trigger every 6 hours in case self-chaining misses or is interrupted
     - cron: '0 */6 * * *'
@@ -106,6 +110,13 @@ jobs:
         run: |
           echo "[*] Runner Egress Network Profile:"
           curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip|loc|warp" || true
+
+      - name: Activate Deep Backfill (requested)
+        # Sets a persistent flag in the DB; every chained session keeps
+        # grinding the archive backlog until all zones report complete, then
+        # the fleet auto-deactivates deep mode.
+        if: ${{ github.event.inputs.deep_backfill != '' && github.event.inputs.deep_backfill != 'none' }}
+        run: python -X utf8 scraper/deep_backfill.py set ${{ github.event.inputs.deep_backfill }}
 
       - name: Run Unified Human-Adaptive Scraper Daemon
         id: scraper-daemon

@@ -1,24 +1,24 @@
 {
-  "status": "completed",
+  "status": "running",
   "categories": {
     "fangsung:中国AV": {
       "category": "fangsung:中国AV",
       "mode": "resume",
       "status": "completed",
-      "start_page": 1,
-      "end_page": 1,
-      "current_page": 0,
-      "pages_crawled": 1,
-      "items_found": 20,
-      "items_new": 0,
-      "skipped_known": 20,
+      "start_page": 8,
+      "end_page": 9,
+      "current_page": 9,
+      "pages_crawled": 2,
+      "items_found": 40,
+      "items_new": 40,
+      "skipped_known": 0,
       "skipped_dead": 0,
       "skipped_unresolved": 0,
-      "upserted": 0,
+      "upserted": 40,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-25T13:53:31.348599+00:00",
-      "finished_at": "2026-11-25T13:53:34.061088+00:00"
+      "started_at": "2026-11-25T15:10:15.715679+00:00",
+      "finished_at": "2026-11-25T15:11:37.419934+00:00"
     }
   },
   "started_at": "2026-11-25T13:52:42.800733+00:00",
@@ -26,7 +26,7 @@
   "categories_requested": [
     "中国AV"
   ],
-  "updated_at": "2026-11-25T13:53:40.973750+00:00",
+  "updated_at": "2026-11-25T15:11:41.953639+00:00",
   "finished_at": "2026-11-25T13:53:40.973713+00:00",
   "totals": {
     "upserted": 20

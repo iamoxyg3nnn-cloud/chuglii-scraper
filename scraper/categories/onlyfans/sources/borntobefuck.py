@@ -333,6 +333,146 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_RE_OG_TITLE = re.compile(r'property="og:title"\s+content="([^"]*)"', re.S)
+_RE_OG_IMAGE = re.compile(r'property="og:image"\s+content="([^"]*)"', re.S)
+_RE_HTML_TITLE = re.compile(r"<title>([^<]{3,220})</title>", re.S)
+_RE_CLOCK = re.compile(r"^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s*$")
+
+
+def _duration_to_seconds(text: str) -> Optional[int]:
+    m = _RE_CLOCK.match(text or "")
+    if not m:
+        return None
+    hours = int(m.group(1) or 0)
+    return hours * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+
+
+_RE_EXTINF = re.compile(r"#EXTINF:([0-9.]+)", re.I)
+
+
+def hls_duration(master_url: str, referer: Optional[str] = None) -> Optional[int]:
+    """Exact duration in seconds, summed from a rendition's ``#EXTINF`` tags.
+
+    The watch page does NOT expose the main video's duration (the only
+    ``data-duration`` values on it belong to related videos), so deriving it
+    from the playlist is both exact and cheaper than ffprobe.
+    """
+    if not master_url:
+        return None
+    page = _net.fetch(master_url, retries=1, referer=referer or (BASE_URL + "/"))
+    if page is None or page.status != 200:
+        return None
+    text = page.html_content
+    if "#EXTM3U" not in text:
+        return None
+    if "#EXT-X-STREAM-INF" in text:
+        variants = [
+            ln.strip() for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        if not variants:
+            return None
+        page = _net.fetch(urljoin(master_url, variants[0]), retries=1, referer=referer or (BASE_URL + "/"))
+        if page is None or page.status != 200:
+            return None
+        text = page.html_content
+    parts = _RE_EXTINF.findall(text)
+    if not parts:
+        return None
+    try:
+        total = sum(float(p) for p in parts)
+    except ValueError:
+        return None
+    return int(round(total)) if total > 0 else None
+
+
+_RE_REMOVED = (
+    re.compile(r"video has been removed", re.I),
+    re.compile(r"<title>\s*[^<]*video removed", re.I),
+)
+
+
+def is_removed_page(html: str) -> bool:
+    """True when the watch page is the site's removed-video notice.
+
+    Such a page still carries a working player (the CDN never deleted the old
+    stream), so a stream check alone reports it alive. The site itself declares
+    it gone -- "video has been removed and is no longer available" -- and the
+    requirement is that dead videos are never stored, so the page wins.
+    """
+    text = html or ""
+    return any(pattern.search(text) for pattern in _RE_REMOVED)
+
+
+def scrape_metadata_from_watch(video_id: str) -> Optional[Dict[str, Any]]:
+    """Build a card from a watch page (for ids no listing ever showed).
+
+    Only fields that can be read reliably are taken: ``og:title`` is unique in
+    the document, while duration/model/country are scoped to the
+    ``active-video-container`` block so the related-videos grid cannot leak in.
+    Views and tags are not reliably attributable and are left at defaults;
+    the nightly revalidation and the listing crawl fill the rest.
+    """
+    vid = str(video_id).strip()
+    if not vid.isdigit():
+        return None
+    resp = fetch_page(f"{BASE_URL}/watch/{vid}")
+    if not resp:
+        return None
+    html = resp.html_content or ""
+    if is_removed_page(html):
+        return None
+
+    title = ""
+    og = _RE_OG_TITLE.search(html)
+    if og:
+        title = _clean(og.group(1))
+    if not title:
+        tag = _RE_HTML_TITLE.search(html)
+        title = _clean(tag.group(1)) if tag else ""
+    title = _RE_TITLE_SUFFIX.sub("", title).strip()
+    if not title:
+        return None
+
+    start = html.find("active-video-container")
+    block = html[start:start + 9000] if start >= 0 else html
+
+    duration = None
+    clock = re.search(r'class="video-duration[^"]*"[^>]*>\s*([0-9:]{4,10})\s*<', block)
+    if clock:
+        duration = _duration_to_seconds(clock.group(1))
+
+    handle = ""
+    hm = _RE_MODEL_HANDLE.search(block)
+    if hm:
+        handle = hm.group(1)
+
+    country = ""
+    cm = _RE_COUNTRY.search(block)
+    if cm:
+        country = cm.group(1)
+
+    thumb = ""
+    ogi = _RE_OG_IMAGE.search(html)
+    if ogi:
+        thumb = ogi.group(1)
+
+    return {
+        "source_site": SOURCE_SITE,
+        "source_post_id": vid,
+        "title": title,
+        "detail_url": f"{BASE_URL}/watch/{vid}",
+        "thumbnail_url": thumb,
+        "models": [handle.replace("-", " ").title()] if handle else [],
+        "model_handle": handle,
+        "categories_raw": [country] if country else [],
+        "duration_seconds": duration,
+        "views_count": 0,
+        "views_raw": "0",
+        "published_at": None,
+    }
+
+
 def enrich_from_id(video_id: str) -> Optional[Dict[str, Any]]:
     """Build a minimal card straight from an id (P6 id sweep).
 

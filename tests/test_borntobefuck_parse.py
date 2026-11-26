@@ -88,3 +88,32 @@ def test_archive_ids_below_cutoff_never_fetch(monkeypatch):
     assert b.player_fragment("12248") is None
     assert b.resolve_stream("12248") == (None, [])
     assert called["n"] == 0
+
+
+# ─── Removed-video detection (P6) ────────────────────────────────────────────
+# A removed watch page still ships a working player, so a stream check alone
+# reports "Video Removed" pages as alive. Three such rows were ingested by the
+# first sweep before this check existed.
+
+REMOVED_PAGE = """<html><head><title>Video Removed - BornToBeFuck</title></head>
+<body><div class="active-video-container">
+<p>This video has been removed and is no longer available.</p></div></body></html>"""
+
+
+def test_is_removed_page_detects_the_notice():
+    assert b.is_removed_page(REMOVED_PAGE) is True
+
+
+def test_is_removed_page_ignores_a_normal_page():
+    assert b.is_removed_page('<html><title>Some Sextape</title><body>ok</body></html>') is False
+
+
+def test_removed_page_is_not_ingested(monkeypatch):
+    """The metadata path must return None so the sweep records it dead."""
+
+    class R:
+        status = 200
+        html_content = REMOVED_PAGE
+
+    monkeypatch.setattr(b, "fetch_page", lambda url: R())
+    assert b.scrape_metadata_from_watch("16462") is None

@@ -120,6 +120,72 @@ def get_scraped_videos(source_site: Optional[str] = None, tag: Optional[str] = N
     response = supabase.rpc("scraper_get_videos", params).execute()
     return response.data
 
+
+VIRAL_MMS_SITE_RPCS = {
+    "spicymms": "scraper_upsert_spicymms_videos",
+    "desi49": "scraper_upsert_desi49_videos",
+    "mydesi": "scraper_upsert_mydesi_videos",
+    "indianbfclips": "scraper_upsert_indianbfclips_videos",
+}
+
+
+def upsert_viral_mms_site_videos_batch(
+    source_site: str, polished_records: List[Dict[str, Any]], retries: int = 4
+) -> Any:
+    """Batch upserts records strictly into the isolated per-site Viral MMS table."""
+    if not polished_records:
+        return {"success": True, "count": 0}
+    rpc_name = VIRAL_MMS_SITE_RPCS.get(str(source_site or "").strip().lower())
+    if not rpc_name:
+        return {"success": False, "error": f"unknown viral-mms site: {source_site}", "count": 0}
+
+    res = call_supabase_rpc(rpc_name, {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc(rpc_name, {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Viral MMS [{source_site}] upsert failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            wait_time = (attempt + 1) * 3
+            time.sleep(wait_time)
+
+
+def get_viral_mms_site_videos(
+    source_site: str,
+    tag: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: str = "newest",
+    limit: int = 24,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Retrieves videos strictly from the site's isolated Viral MMS table."""
+    site_key = str(source_site or "").strip().lower()
+    if site_key not in VIRAL_MMS_SITE_RPCS:
+        return []
+    supabase = get_supabase_client()
+    response = supabase.rpc(
+        f"scraper_get_{site_key}_videos",
+        {
+            "p_source_site": site_key,
+            "p_tag": tag,
+            "p_category": category,
+            "p_search": search,
+            "p_sort": sort,
+            "p_limit": limit,
+            "p_offset": offset,
+        },
+    ).execute()
+    return response.data or []
+
 import time
 
 # ─── Isolated Japanese Database Functions ──────────────────────────────────

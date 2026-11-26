@@ -62,7 +62,12 @@ def clean_title_text(title: str) -> str:
     if not title:
         return ""
     cleaned = re.sub(r"\s+", " ", title).strip()
-    cleaned = re.sub(r"\s*[-|•]\s*MMSVibeX.*$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(
+        r"\s*[-|•]\s*(?:MMSVibeX|SpicyMMS|Spicy\s*MMS|Desi49|MyDesi|IndianBFClips).*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     return cleaned
 
 def clean_taxonomy_list(items: List[str]) -> List[str]:

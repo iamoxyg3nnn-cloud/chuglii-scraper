@@ -264,6 +264,31 @@ def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
         return total_ingested
 
 
+def run_viral_mms_sites_sync(check_head: bool = True, pages_per_site: int = 1, workers: int = 4) -> int:
+    """Runs isolated per-site Viral MMS sources (spicymms, desi49, mydesi, indianbfclips)."""
+    log("\n" + "=" * 65)
+    log("  [FEED 1b] Viral MMS Isolated Sites (SpicyMMS, Desi49, MyDesi, IndianBFClips)")
+    log("=" * 65)
+    try:
+        import importlib
+
+        mod = importlib.import_module("scraper.categories.viral-mms.sites_pipeline")
+        res = mod.run_multi_site_pipeline(
+            pages_per_site=pages_per_site,
+            check_head=check_head,
+            dry_run=False,
+            workers=workers,
+        )
+        FEED_STATUS["viral-mms-sites"] = res.get("status", "completed")
+        added = int(res.get("upserted", 0) or 0)
+        log(f"  [OK] Viral MMS Isolated Sites complete. Added: {added}")
+        return added
+    except Exception as e:
+        FEED_STATUS["viral-mms-sites"] = "failed"
+        log(f"  [!] Viral MMS Isolated Sites sync error: {e}")
+        return 0
+
+
 # ─── Japanese JAV Ingestion Task ─────────────────────────────────────────────
 
 def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int = 3, checkpoint: Optional[Dict[str, Any]] = None) -> int:
@@ -1051,6 +1076,8 @@ def run_unified_sync_cycle(
             return 0
 
     mms_count = run_feed("viral-mms", run_viral_mms_sync, check_head=check_head, pages=mms_pages)
+    human_jitter(1.0, 2.0)
+    mms_sites_count = run_feed("viral-mms-sites", run_viral_mms_sites_sync, check_head=check_head, pages_per_site=mms_pages, workers=workers)
     human_jitter(1.5, 2.5)
     jav_count = run_feed("supjav", run_japanese_jav_sync, check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
     human_jitter(1.5, 2.5)
@@ -1085,6 +1112,7 @@ def run_unified_sync_cycle(
     log("\n" + "#" * 65)
     log(f"  CYCLE SUMMARY | Elapsed: {elapsed:.1f}s | Status: {global_status}")
     log(f"  - Viral MMS:    {mms_count} videos processed")
+    log(f"  - Viral Sites:  {mms_sites_count} new videos ingested")
     log(f"  - Japanese JAV: {jav_count} new videos ingested")
     log(f"  - Myanmar:      {myanmar_count} new videos ingested")
     log(f"  - OnlyFans:     {of_count} new videos ingested")
@@ -1099,6 +1127,7 @@ def run_unified_sync_cycle(
 
     return {
         "mms": mms_count,
+        "mms_sites": mms_sites_count,
         "jav": jav_count,
         "myanmar": myanmar_count,
         "onlyfans": of_count,
@@ -1307,6 +1336,7 @@ if __name__ == "__main__":
     parser.add_argument("--fs-pages", type=int, default=1, help="Pages per fangsung region term to scrape per run")
     parser.add_argument("--st-pages", type=int, default=1, help="Pages per studios site section to scrape per run")
     parser.add_argument("--deep-chunk-pages", type=int, default=20, help="Pages per zone per deep-backfill chunk (default: 20)")
+    parser.add_argument("--viral-mms-sites", action="store_true", help="Run only isolated Viral MMS sites sync")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
@@ -1322,7 +1352,12 @@ if __name__ == "__main__":
         log(f"[thumbs] backfill complete: {done} storyboard(s) generated")
         sys.exit(0)
 
-    if args.onlyfans:
+    if args.viral_mms_sites:
+        if wait_for_supabase_before_cycle():
+            run_viral_mms_sites_sync(check_head=args.check_head, pages_per_site=args.mms_pages, workers=args.workers)
+        else:
+            log("[STOP] Supabase unavailable; Viral MMS sites sync did not start.")
+    elif args.onlyfans:
         if wait_for_supabase_before_cycle():
             init_known_id_caches()
             run_onlyfans_sync(check_head=args.check_head, pages_per_site=args.of_pages)

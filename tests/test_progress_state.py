@@ -157,6 +157,7 @@ def _patch_cycle_dependencies(monkeypatch):
     # scraping and hangs the suite (this is what pinned test_progress_state).
     for name in (
         "run_viral_mms_sync",
+        "run_viral_mms_sites_sync",
         "run_japanese_jav_sync",
         "run_myanmar_sync",
         "run_onlyfans_sync",
@@ -195,6 +196,37 @@ def test_unified_cycle_reports_degraded_feeds(monkeypatch):
     assert saved["status"] == "partial"
     assert saved["degraded_feeds"] == ["onlyfans"]
     assert saved["failed_feeds"] == []
+
+
+def test_unified_cycle_does_no_live_network(monkeypatch):
+    """Every feed runner must be stubbed; a leak would scrape and WRITE to prod.
+
+    Regression: run_unified_sync_cycle also runs the Viral MMS isolated sub-sites
+    (FEED 1b). When that runner was not stubbed the test suite silently ingested
+    ~144 real videos into the production database on every run.
+    """
+    unified, _ = _patch_cycle_dependencies(monkeypatch)
+
+    def _blocked(*args, **kwargs):
+        raise AssertionError("test attempted real network I/O via an unstubbed runner")
+
+    import curl_cffi.requests as creq
+
+    monkeypatch.setattr(creq, "get", _blocked, raising=False)
+    monkeypatch.setattr(creq, "post", _blocked, raising=False)
+    monkeypatch.setattr(creq, "Session", _blocked, raising=False)
+
+    import httpx
+
+    class _BlockedClient:
+        def __init__(self, *a, **k):
+            raise AssertionError("test attempted real network I/O via httpx.Client")
+
+    monkeypatch.setattr(httpx, "Client", _BlockedClient)
+    monkeypatch.setattr(httpx, "get", _blocked, raising=False)
+
+    result = unified.run_unified_sync_cycle(check_head=False)
+    assert result["mms"] == 1
 
 
 def test_supabase_health_requires_usable_rpc(monkeypatch):

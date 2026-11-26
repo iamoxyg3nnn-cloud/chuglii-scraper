@@ -51,10 +51,15 @@ PROGRESS_FILE = CURRENT_DIR / "progress.json"
 # Checkpoint & Cache Persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-ONLYFANS_SITES = ("influencersgonewild", "sheeshfans")
+ONLYFANS_SITES = ("influencersgonewild", "sheeshfans", "borntobefuck", "uncutx")
 DEFAULT_CHECKPOINTS: Dict[str, Any] = {
     "influencersgonewild": {"current_page": 1, "max_pages": 200},
     "sheeshfans": {"current_page": 1, "max_pages": 200},
+    # borntobefuck: listing pages are a rolling ~1-month window; paging stops
+    # around 80 per category (see PLAN_two_new_sources.md).
+    "borntobefuck": {"current_page": 1, "max_pages": 80},
+    # uncutx: PostgREST offsets of 1000; 1365 live rows today.
+    "uncutx": {"current_page": 1, "max_pages": 10},
     "total_ingested": 0,
     "total_merged": 0,
 }

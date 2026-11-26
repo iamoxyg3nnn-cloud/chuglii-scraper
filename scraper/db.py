@@ -293,6 +293,8 @@ def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = N
 ONLYFANS_SOURCE_TABLE_RPC = {
     "influencersgonewild": "scraper_insert_onlyfans_influencersgonewild_videos",
     "sheeshfans": "scraper_insert_onlyfans_sheeshfans_videos",
+    "borntobefuck": "scraper_insert_onlyfans_borntobefuck_videos",
+    "uncutx": "scraper_insert_onlyfans_uncutx_videos",
 }
 
 def upsert_onlyfans_video(polished_record: Dict[str, Any]) -> Any:

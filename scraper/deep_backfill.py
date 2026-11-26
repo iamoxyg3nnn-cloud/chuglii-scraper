@@ -28,6 +28,12 @@ if str(_REPO_ROOT) not in sys.path:
 
 FLAG_KEY = "deep_backfill"
 
+# Hard ceiling on how many crawl passes one zone may burn per deep-backfill
+# call. A legitimate zone needs at most ceil(max_pages / chunk_pages) passes
+# (50/20 -> 3); anything beyond this is a cursor bug and must not eat the
+# session. Added after run 45742796072 looped a dead dasj91 page 13,185 times.
+_MAX_ITERATIONS_PER_ZONE = 40
+
 TARGETS = {
     "chinese": {"pipeline": "scraper.categories.chinese.pipeline", "site_key": "uxj838238", "label": "Chinese (uxj838238)"},
     "fangsung": {"pipeline": "scraper.categories.fangsung.pipeline", "site_key": "fangsung", "label": "Fangsung (www.fangsung.com)"},
@@ -53,11 +59,11 @@ def get_flag() -> Dict[str, Any]:
     return {"active": False, "targets": []}
 
 
-def set_flag(targets: List[str], active: bool = True) -> bool:
+def set_flag(targets: Optional[List[str]] = None, active: bool = True) -> bool:
     from scraper.db import call_supabase_rpc
     state = {
         "active": active,
-        "targets": sorted(targets),
+        "targets": sorted(targets or []),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     data = call_supabase_rpc("scraper_set_checkpoint", {"p_key": FLAG_KEY, "p_state": state})
@@ -164,9 +170,19 @@ def run_deep_backfill(
         print(f"[DEEP] [{cfg['label']}] zones pending: {len(pending)} | pages remaining: {pages_left}")
 
         crawled_pages = 0
+        stalls: Dict[str, int] = {}
         for key in pending:
             zsite, term = key.split(":", 1)
+            iterations = 0
             while time.time() < deadline - min_chunk_seconds:
+                iterations += 1
+                if iterations > _MAX_ITERATIONS_PER_ZONE:
+                    # Belt and braces: no cursor bug may ever spin a whole session.
+                    print(
+                        f"[DEEP] [{cfg['label']}] {term}: hit {_MAX_ITERATIONS_PER_ZONE} "
+                        "iteration cap; abandoning zone this pass."
+                    )
+                    break
                 state = checkpoints[key]
                 cur = int(state.get("current_page", 1) or 1)
                 mx = int(state.get("max_pages", 50) or 50)
@@ -189,12 +205,28 @@ def run_deep_backfill(
                     print(f"[DEEP] [{cfg['label']}] {term}: chunk failed, skipping zone this pass: {exc}")
                     break
                 crawled = int(stats.get("pages_crawled", 0) or 0)
-                if not stats.get("upsert_failed") and crawled > 0:
-                    state["current_page"] = cur + crawled
-                    crawled_pages += crawled
+                true_max = stats.get("true_max_pages")
                 detected = stats.get("detected_max_pages")
+                progressed = False
+                if not stats.get("upsert_failed"):
+                    if isinstance(true_max, int) and true_max >= 0:
+                        # The listing genuinely ended at true_max (empty page /
+                        # 404 past the real end). Pin the cursor past it so the
+                        # zone reads as COMPLETE instead of re-crawling a dead
+                        # page forever - the site's advertised total is inflated.
+                        state["max_pages"] = max(1, true_max)
+                        state["current_page"] = max(2, true_max + 1)
+                        crawled_pages += crawled
+                        progressed = True
+                    elif crawled > 0:
+                        state["current_page"] = cur + crawled
+                        crawled_pages += crawled
+                        progressed = True
                 if isinstance(detected, int) and detected > 0:
-                    state["max_pages"] = max(int(state.get("max_pages", 0) or 0), detected)
+                    # Never let an inflated advertised total pull the cursor back.
+                    state["max_pages"] = max(
+                        int(state.get("max_pages", 0) or 0), detected
+                    )
                 checkpoints[key] = state
                 mod.save_known_ids(known_ids)
                 mod.save_checkpoints(checkpoints)
@@ -203,6 +235,19 @@ def run_deep_backfill(
                 new_cur = int(state.get("current_page", 1) or 1)
                 if new_cur > int(state.get("max_pages", 50) or 50):
                     print(f"[DEEP] [{cfg['label']}] {term}: COMPLETE ({new_cur - 1} pages indexed)")
+                if not progressed:
+                    # No page was indexed and nothing advanced: one dead zone
+                    # must never starve the rest of the backlog for the session.
+                    stall = stalls.get(key, 0) + 1
+                    stalls[key] = stall
+                    if stall >= 2:
+                        print(
+                            f"[DEEP] [{cfg['label']}] {term}: no progress after "
+                            f"{stall} attempts; abandoning zone this pass."
+                        )
+                        break
+                else:
+                    stalls[key] = 0
                 if time.time() >= deadline - min_chunk_seconds:
                     summary["stopped_at"] = "deadline"
                     break

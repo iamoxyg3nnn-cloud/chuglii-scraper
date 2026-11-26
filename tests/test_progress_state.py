@@ -144,6 +144,7 @@ def _patch_cycle_dependencies(monkeypatch):
     import scraper.unified_scraper as unified
 
     monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: True)
+    monkeypatch.setattr(unified, "wait_for_supabase_before_cycle", lambda *a, **k: True)
     monkeypatch.setattr(unified, "init_known_id_caches", lambda: None)
     monkeypatch.setattr(unified, "load_japanese_checkpoint", lambda: {})
     monkeypatch.setattr(unified, "human_jitter", lambda *args, **kwargs: None)
@@ -152,12 +153,17 @@ def _patch_cycle_dependencies(monkeypatch):
         progress, "save_progress",
         lambda key, state, local_file=None: saved.update(state) or True,
     )
+    # Every feed runner must be stubbed: an unpatched one performs real network
+    # scraping and hangs the suite (this is what pinned test_progress_state).
     for name in (
         "run_viral_mms_sync",
         "run_japanese_jav_sync",
         "run_myanmar_sync",
         "run_onlyfans_sync",
         "run_voyeurhouse_sync",
+        "run_chinese_sync",
+        "run_fangsung_sync",
+        "run_studios_sync",
     ):
         monkeypatch.setattr(unified, name, lambda **kwargs: 1)
     return unified, saved
@@ -258,7 +264,9 @@ def test_wait_for_supabase_before_cycle_respects_session_deadline(monkeypatch):
 def test_unified_cycle_skips_all_feeds_while_supabase_is_down(monkeypatch):
     unified, saved = _patch_cycle_dependencies(monkeypatch)
     called = []
-    monkeypatch.setattr(unified, "wait_for_supabase", lambda **kwargs: False)
+    # run_unified_sync_cycle gates on wait_for_supabase_before_cycle (not on
+    # wait_for_supabase directly), so that is the symbol that must fail.
+    monkeypatch.setattr(unified, "wait_for_supabase_before_cycle", lambda *a, **k: False)
     monkeypatch.setattr(unified, "init_known_id_caches", lambda: called.append("caches"))
     for name in (
         "run_viral_mms_sync",
@@ -271,6 +279,15 @@ def test_unified_cycle_skips_all_feeds_while_supabase_is_down(monkeypatch):
 
     result = unified.run_unified_sync_cycle(check_head=False)
 
-    assert result == {"mms": 0, "jav": 0, "myanmar": 0, "onlyfans": 0, "voyeurhouse": 0}
+    assert result == {
+        "mms": 0,
+        "jav": 0,
+        "myanmar": 0,
+        "onlyfans": 0,
+        "voyeurhouse": 0,
+        "chinese": 0,
+        "fangsung": 0,
+        "studios": 0,
+    }
     assert called == []
     assert saved == {}

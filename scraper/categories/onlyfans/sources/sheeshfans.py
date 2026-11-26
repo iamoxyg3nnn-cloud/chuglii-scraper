@@ -8,6 +8,8 @@ import re
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin
 
+from scraper import net as _net
+
 try:
     from scrapling import Fetcher  # type: ignore
 except Exception:  # pragma: no cover - fallback for minimal envs
@@ -108,30 +110,13 @@ def _is_probably_mp4(url: str) -> bool:
 
 
 def fetch_page(url: str, timeout: int = 25, retries: int = 3) -> Optional[Any]:
-    last_err = None
-    for attempt in range(retries):
-        try:
-            resp = Fetcher.get(url, timeout=timeout, headers={
-                "User-Agent": UA,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": BASE_URL + "/",
-            })
-            status = getattr(resp, "status", 0)
-            if status == 200:
-                return resp
-            if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
-                import time
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            last_err = f"HTTP {status}"
-            break
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                import time
-                time.sleep(1.5 * (attempt + 1))
-    if last_err:
-        print(f"    [SheeshFans] fetch failed {url}: {last_err}")
+    """Fetch via the shared Cloudflare-aware, cached HTTP layer."""
+    page = _net.fetch(url, timeout=timeout, retries=retries, referer=BASE_URL + "/")
+    if page is not None and page.status == 200 and not page.challenge:
+        return page
+    if page is not None and page.via != "dead-cache" and page.status not in (404, 410):
+        reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"
+        print(f"    [SheeshFans] fetch failed {url}: {reason}")
     return None
 
 

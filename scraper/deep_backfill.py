@@ -130,6 +130,36 @@ def coverage_report(targets: Optional[List[str]] = None) -> str:
 # The grind loop
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _supabase_ready(wait_seconds: int = 300) -> bool:
+    """True when scrape results can actually be persisted.
+
+    Scraping while the data plane is down burns requests, invites Cloudflare
+    blocks and produces nothing, which is exactly what happened for 98 minutes
+    during run 45742796072. The health answer is cached (60s) so this is cheap
+    to call inside the grind loop.
+    """
+    try:
+        from scraper.db import supabase_available, wait_for_supabase
+        from scraper import db as _db
+    except Exception:  # pragma: no cover - db module is always present
+        return True
+    # Unconfigured (local/dev) runs have nothing to persist: never pause.
+    if not getattr(_db, "SUPABASE_URL", None):
+        return True
+    try:
+        if supabase_available():
+            return True
+    except Exception:
+        return True
+    print("[DEEP] Supabase data plane unavailable; pausing crawl (results could not persist).")
+    try:
+        if wait_for_supabase(max_wait_seconds=wait_seconds, poll_interval=15):
+            return True
+    except Exception:
+        return True
+    return False
+
+
 def run_deep_backfill(
     targets: List[str],
     deadline: float,
@@ -171,11 +201,19 @@ def run_deep_backfill(
 
         crawled_pages = 0
         stalls: Dict[str, int] = {}
+        offline = False
         for key in pending:
+            if offline:
+                break
             zsite, term = key.split(":", 1)
             iterations = 0
             while time.time() < deadline - min_chunk_seconds:
                 iterations += 1
+                if not _supabase_ready():
+                    offline = True
+                    summary["stopped_at"] = "supabase_offline"
+                    print("[DEEP] Stopping pass: Supabase is offline, so nothing would persist.")
+                    break
                 if iterations > _MAX_ITERATIONS_PER_ZONE:
                     # Belt and braces: no cursor bug may ever spin a whole session.
                     print(
@@ -252,6 +290,8 @@ def run_deep_backfill(
                     summary["stopped_at"] = "deadline"
                     break
             if time.time() >= deadline - min_chunk_seconds:
+                break
+            if offline:
                 break
 
         # Re-snapshot: is this target fully covered now?

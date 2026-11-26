@@ -13,6 +13,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
+from scraper import net as _net
+
 try:
     from curl_cffi import requests as creq  # type: ignore
 except Exception:  # pragma: no cover
@@ -164,7 +166,17 @@ def fetch_html(
             try:
                 resp = creq.get(url, **kwargs)
                 html = resp.text or ""
-                return html, str(getattr(resp, "url", url) or url), int(getattr(resp, "status_code", 0) or 0)
+                status = int(getattr(resp, "status_code", 0) or 0)
+                final_url = str(getattr(resp, "url", url) or url)
+                resp_headers = dict(getattr(resp, "headers", {}) or {})
+                # Never hand a Cloudflare interstitial to a parser as content.
+                if _net.is_cf_challenge(status, html.encode("utf-8", errors="ignore"), resp_headers):
+                    print(f"    [AVS] Cloudflare challenge on {url}; escalating to shared solver.")
+                    page = _net.fetch(url, timeout=timeout, retries=1, referer=referer or None)
+                    if page is not None and page.status == 200 and not page.challenge:
+                        return page.html_content, url, 200
+                    return "", url, 403
+                return html, final_url, status
             except Exception as exc:
                 msg = str(exc).lower()
                 if "certificate" in msg or "ssl" in msg or "verify" in msg:

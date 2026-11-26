@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover
     Fetcher = None
 
 from scraper.proxy_pool import GLOBAL_PROXY_POOL
+from scraper import net as _net
 
 BASE_URL = "https://voyeur-house.org"
 NEW_URL = f"{BASE_URL}/newvideos.html"
@@ -97,8 +98,25 @@ def _proxy_for(url: str) -> Optional[str]:
 
 
 def fetch_page(url: str, timeout: int = 25, retries: int = 3, *, referer: str = BASE_URL + "/", force_proxy: bool = False) -> Optional[Any]:
-    last_error: Any = None
+    """Fetch through the shared Cloudflare-aware cache.
+
+    Proxy-free requests go through :mod:`scraper.net` (cache, politeness and
+    Cloudflare solving). Proxy-bound requests keep the rotating-proxy path but
+    still get challenge detection: a Cloudflare interstitial is never returned
+    as if it were page content, and it falls back to the shared solver.
+    """
     proxy = _proxy_for(url) if (force_proxy or DOOD_HOST_RE.search(url or "")) else None
+
+    if not proxy:
+        page = _net.fetch(url, timeout=timeout, retries=retries, referer=referer)
+        if page is not None and page.status == 200 and not page.challenge:
+            return page
+        if page is not None and page.status not in (404, 410):
+            reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"
+            print(f"    [VH] fetch failed {url}: {reason}")
+        return None
+
+    last_error: Any = None
     for attempt in range(retries):
         try:
             kwargs: Dict[str, Any] = {
@@ -108,20 +126,27 @@ def fetch_page(url: str, timeout: int = 25, retries: int = 3, *, referer: str = 
                     "Accept-Language": "en-US,en;q=0.9",
                     "Referer": referer,
                 },
+                "proxy": proxy,
+                "proxies": {"http": proxy, "https": proxy},
             }
-            if proxy:
-                kwargs["proxy"] = proxy
-                kwargs["proxies"] = {"http": proxy, "https": proxy}
-                print(f"    [VH] using proxy for {url}")
+            print(f"    [VH] using proxy for {url}")
             resp = Fetcher.get(url, **kwargs) if Fetcher is not None else None
             if resp is None:
                 return None
             status = int(getattr(resp, "status", 0) or 0)
+            raw_body = bytes(getattr(resp, "body", b"") or b"")
+            resp_headers = dict(getattr(resp, "headers", {}) or {})
+            if _net.is_cf_challenge(status, raw_body, resp_headers):
+                print(f"    [VH] Cloudflare challenge via proxy on {url}; retrying without proxy.")
+                page = _net.fetch(url, timeout=timeout, retries=retries, referer=referer)
+                if page is not None and page.status == 200 and not page.challenge:
+                    return page
+                return None
             if status == 200:
                 return resp
             last_error = f"HTTP {status}"
             if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
-                if proxy and hasattr(GLOBAL_PROXY_POOL, "report_failure"):
+                if hasattr(GLOBAL_PROXY_POOL, "report_failure"):
                     GLOBAL_PROXY_POOL.report_failure(proxy)
                 time.sleep(1.5 * (attempt + 1))
                 continue

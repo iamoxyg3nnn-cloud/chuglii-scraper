@@ -10,3 +10,6 @@ Thumbs.db
 
 # Runtime Cloudflare session caches (contain cf_clearance cookies)
 cf_session.json
+scraper/.cache/
+.cache/http/
+.cache/cf/

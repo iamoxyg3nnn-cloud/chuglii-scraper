@@ -704,6 +704,34 @@ def is_supabase_healthy(timeout: float = 8.0) -> bool:
     except Exception:
         return False
 
+# Cached data-plane health, so crawl loops can cheaply ask "can we persist
+# right now?" without an 8s RPC probe on every page. Updated whenever a probe
+# runs; ``max_age`` keeps the answer honest for at most that many seconds.
+_HEALTH_CACHE: Dict[str, Any] = {"ts": 0.0, "ok": True}
+
+
+def supabase_available(max_age: float = 60.0, timeout: float = 8.0) -> bool:
+    """Cached :func:`is_supabase_healthy`.
+
+    Crawl loops use this to pause instead of scraping pages whose rows can
+    never be written. On 2026-11-26 the daemon kept hammering 91dasj for 98
+    minutes while the data plane was down.
+    """
+    now = time.time()
+    if now - float(_HEALTH_CACHE.get("ts") or 0.0) < max_age:
+        return bool(_HEALTH_CACHE.get("ok"))
+    ok = is_supabase_healthy(timeout=timeout)
+    _HEALTH_CACHE["ts"] = now
+    _HEALTH_CACHE["ok"] = ok
+    return ok
+
+
+def mark_supabase_unavailable() -> None:
+    """Force the next :func:`supabase_available` call to re-probe."""
+    _HEALTH_CACHE["ts"] = 0.0
+    _HEALTH_CACHE["ok"] = False
+
+
 def wait_for_supabase(max_wait_seconds: int = 600, poll_interval: int = 15) -> bool:
     """
     Blocks and polls until Supabase's scraper RPC is usable.

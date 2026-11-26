@@ -1096,6 +1096,7 @@ def run_unified_sync_cycle(
         "voyeurhouse": vh_count,
         "chinese": cn_count,
         "fangsung": fs_count,
+        "studios": st_count,
     }
 
 
@@ -1136,6 +1137,20 @@ def run_continuous_daemon(
     log(f"  Streaming Logs:      ACTIVE (unbuffered)")
     log("=" * 65)
 
+    # Surface the HTTP layer's state so cache/Cloudflare behaviour is visible
+    # in the run log instead of being invisible background magic.
+    try:
+        from scraper import net as _net
+
+        _stats = _net.cache_stats()
+        log(
+            f"  HTTP cache:          {_stats['entries']} entries "
+            f"({_stats['live']} live, {_stats['dead']} dead)"
+        )
+        log(f"  Politeness:          >= {_net.HOST_MIN_INTERVAL:.2f}s between requests per host")
+    except Exception as exc:
+        log(f"  [!] HTTP layer status unavailable: {exc}")
+
     while True:
         elapsed = time.time() - start_time
         remaining = max_seconds - elapsed
@@ -1145,6 +1160,29 @@ def run_continuous_daemon(
             log("[HANDOFF] Exiting cleanly so successor job can run without queuing.")
             cleanup_orphan_browsers()
             break
+
+        # Never scrape while the data plane is down: rows would be lost and the
+        # origin gets hammered for nothing (98 minutes of wasted requests during
+        # run 45742796072). Probe at most once a minute, then pause politely.
+        db_ready = True
+        try:
+            from scraper.db import supabase_available, wait_for_supabase
+
+            db_ready = supabase_available()
+            if not db_ready:
+                log("\n[PAUSE] Supabase data plane unavailable; not scraping this cycle.")
+                db_ready = wait_for_supabase(
+                    max_wait_seconds=max(60, min(300, int(remaining - 60))),
+                    poll_interval=15,
+                )
+        except Exception as exc:
+            log(f"[!] Supabase health probe failed ({exc}); continuing.")
+
+        if not db_ready:
+            log("[PAUSE] Still offline. Sleeping before the next attempt.")
+            time.sleep(max(30.0, min(interval_seconds, 120)))
+            cycle += 1
+            continue
 
         # Check Page 1 on Cycle 1 or when interval has elapsed
         now = time.time()

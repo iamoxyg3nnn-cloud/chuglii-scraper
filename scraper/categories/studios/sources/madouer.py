@@ -48,6 +48,7 @@ except Exception:  # pragma: no cover - vendored fallback
         Fetcher = None
 
 from scraper.categories.studios.categories import category_info, is_enabled
+from scraper import net as _net
 
 BASE_URL = "https://madouer.cc"
 SOURCE_SITE = "madouer"
@@ -92,26 +93,14 @@ def _get_fetcher():
 
 
 def fetch_page(url: str, timeout: int = 30, retries: int = 3) -> Optional[Any]:
-    fetch_page.last_status = None
-    last_err = None
-    for attempt in range(retries):
-        try:
-            resp = _get_fetcher().get(url, stealthy_headers=True, timeout=timeout)
-            status = getattr(resp, "status", 0)
-            fetch_page.last_status = status
-            if status == 200:
-                return resp
-            if status in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            last_err = f"HTTP {status}"
-            break
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
-    if last_err:
-        print(f"    [madouer] fetch failed {url[:90]}: {last_err}")
+    """Fetch via the shared Cloudflare-aware, cached HTTP layer."""
+    page = _net.fetch(url, timeout=timeout, retries=retries)
+    fetch_page.last_status = page.status if page is not None else None
+    if page is not None and page.status == 200 and not page.challenge:
+        return page
+    if page is not None and page.via != "dead-cache" and page.status not in (404, 410):
+        reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"
+        print(f"    [madouer] fetch failed {url[:90]}: {reason}")
     return None
 
 

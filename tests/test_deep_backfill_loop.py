@@ -60,6 +60,9 @@ class FakePipeline:
 @pytest.fixture
 def fake_target(monkeypatch):
     """Wire run_deep_backfill to one synthetic deadline-proof target."""
+    # Never let a test touch the live Supabase health probe.
+    monkeypatch.setattr(deep_backfill, "_supabase_ready", lambda *a, **k: True)
+
     def _install(responses, initial=None):
         mod = FakePipeline(responses)
         mod.checkpoints = initial or {"dasj91:aifl": {"current_page": 20, "max_pages": 50}}
@@ -132,6 +135,21 @@ def test_upsert_failure_does_not_advance_cursor(fake_target):
         targets=["fake"], deadline=time.time() + 600, min_chunk_seconds=1, chunk_pages=5
     )
     assert mod.checkpoints["dasj91:aifl"]["current_page"] == 20
+
+
+def test_offline_supabase_stops_the_pass_without_crawling(fake_target):
+    """A dead data plane must stop the pass, not scrape rows that cannot persist."""
+    mod = fake_target([{"pages_crawled": 5}])
+    deep_backfill._supabase_ready = lambda *a, **k: False
+    try:
+        summary = deep_backfill.run_deep_backfill(
+            targets=["fake"], deadline=time.time() + 600, min_chunk_seconds=1
+        )
+    finally:
+        deep_backfill._supabase_ready = lambda *a, **k: True
+
+    assert mod.calls == [], "crawl ran while Supabase was offline"
+    assert summary["stopped_at"] == "supabase_offline"
 
 
 def test_clear_flag_does_not_require_targets(monkeypatch):

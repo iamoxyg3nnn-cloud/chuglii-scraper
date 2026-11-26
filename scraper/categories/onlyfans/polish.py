@@ -103,6 +103,16 @@ def prioritize_servers(servers: List[Dict[str, Any]]) -> tuple[Optional[str], Li
         mime = s.get("type", "").lower()
         combined = f"{name} {url}".lower()
 
+        # Prefer a MEASURED resolution when the source supplies one. Token
+        # sniffing only recognises 2160/1440/1080/720/480, so a rendition whose
+        # real class is unusual -- e.g. a portrait 1280-wide master labelled
+        # "1280p", or 854p -- matched no token and fell through to a default.
+        # That made it tie with a genuine 720p entry, so the primary stream was
+        # decided by incidental ordering instead of by measured quality.
+        measured = s.get("quality_score")
+        if isinstance(measured, int) and measured > 0:
+            return measured
+
         if any(k in combined for k in ["4k", "2160p", "uhd"]):
             base_res = 2160
         elif any(k in combined for k in ["2k", "1440p", "qhd"]):

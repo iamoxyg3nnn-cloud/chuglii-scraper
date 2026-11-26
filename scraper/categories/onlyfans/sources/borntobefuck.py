@@ -242,6 +242,33 @@ def player_fragment(video_id: str) -> Optional[str]:
     return resp.html_content if resp else None
 
 
+#: Standard quality tiers, highest first. Labels are bucketed to these so the
+#: UI never shows an odd width like "718p" (portrait masters vary), while the
+#: numeric score keeps the exact measured value so ordering stays precise.
+_QUALITY_TIERS = (
+    (2160, "4K UHD"),
+    (1440, "1440p QHD"),
+    (1080, "1080p Full HD"),
+    (720, "720p HD"),
+    (480, "480p SD"),
+    (360, "360p"),
+)
+
+#: A rendition within this fraction below a tier still belongs to that tier
+#: (a 718px-wide portrait is a 720p upload, not "480p").
+_TIER_TOLERANCE = 0.05
+
+
+def quality_label_for(height: int) -> str:
+    """Human label for a measured rendition, bucketed to a standard tier."""
+    if not height or height <= 0:
+        return "auto"
+    for tier, label in _QUALITY_TIERS:
+        if height >= tier * (1 - _TIER_TOLERANCE):
+            return label
+    return f"{height}p"
+
+
 def parse_master(master_url: str) -> List[Dict[str, Any]]:
     """Turn a master m3u8 into ``servers[]`` entries ordered best-first."""
     page = _net.fetch(master_url, retries=1, referer=BASE_URL + "/")
@@ -262,7 +289,7 @@ def parse_master(master_url: str) -> List[Dict[str, Any]]:
             height = min(width_px, height_px)
         else:
             height = 0
-        label = {1080: "1080p Full HD", 720: "720p HD", 480: "480p SD"}.get(height, f"{height}p" if height else "auto")
+        label = quality_label_for(height)
         servers.append(
             {
                 "name": f"BornToBeFuck {label}",

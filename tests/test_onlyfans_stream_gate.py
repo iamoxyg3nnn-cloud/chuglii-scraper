@@ -282,3 +282,40 @@ def test_fmt_duration():
     assert uncutx._fmt_duration(3725) == "1:02:05"
     assert uncutx._fmt_duration(None) is None
     assert uncutx._fmt_duration(0) is None
+
+
+# ─── Rendition selection must follow MEASURED quality ────────────────────────
+
+def test_polish_picks_the_highest_measured_rendition():
+    """A portrait 1280-wide master must beat a genuine 720p entry.
+
+    Regression: polish scored renditions by name tokens only, so label "1280p"
+    matched nothing and fell through to a default -- tying with "720p HD" and
+    letting incidental list order decide the PRIMARY stream.
+    """
+    from scraper.categories.onlyfans.polish import prioritize_servers
+
+    servers = [
+        {"name": "BornToBeFuck 720p HD", "server": "b", "embed_url": "https://cdn/a/720p/index.m3u8",
+         "type": "hls", "quality_label": "720p HD", "quality_score": 720},
+        {"name": "BornToBeFuck 1280p", "server": "b", "embed_url": "https://cdn/a/1280p/index.m3u8",
+         "type": "hls", "quality_label": "1280p", "quality_score": 1280},
+    ]
+    primary, ordered, label, score = prioritize_servers(servers)
+
+    assert "1280p" in primary
+    assert ordered[0]["embed_url"].endswith("1280p/index.m3u8")
+    assert score == 1280
+
+
+def test_polish_keeps_token_sniffing_when_no_measurement():
+    """Sources that do not measure (legacy embeds) must still rank by name."""
+    from scraper.categories.onlyfans.polish import prioritize_servers
+
+    servers = [
+        {"name": "Server SD", "server": "x", "embed_url": "https://h/sd", "type": "embed"},
+        {"name": "Server 1080p Full HD", "server": "x", "embed_url": "https://h/fhd", "type": "embed"},
+    ]
+    primary, _ordered, _label, score = prioritize_servers(servers)
+    assert primary == "https://h/fhd"
+    assert score == 1080

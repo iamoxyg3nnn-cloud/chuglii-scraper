@@ -181,6 +181,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: python -X utf8 scraper/categories/onlyfans/verify_dead.py --limit 200 || true
 
+      - name: Health Gate (OnlyFans sources)
+        # Deliberately NOT suffixed with `|| true`. Every ingest step above is,
+        # so a source that silently stops producing looks exactly like a
+        # healthy run: green steps, empty site. This fails the run instead.
+        if: ${{ !cancelled() }}
+        run: python -X utf8 scraper/tools/onlyfans_health.py --max-stale-days 7
+
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can
         # poison known-ID caches, and cancellation must remain a hard stop.

@@ -80,15 +80,19 @@ def probe_hls(url: str, referer: Optional[str] = None, timeout: float = 15.0) ->
     if "#EXTM3U" not in text:
         return False, status, "master is not a playlist"
 
+    # A media playlist (segments) is perfectly valid input -- it is what gets
+    # stored when a source exposes per-rendition URLs. Distinguish it from a
+    # master BEFORE reading URIs, otherwise its .ts lines look like variants
+    # and we probe a segment as if it were a playlist.
+    if "#EXT-X-STREAM-INF" not in text:
+        return _probe_media_playlist(url, text, referer, status, timeout)
+
     variants = [
         ln.strip() for ln in text.splitlines()
         if ln.strip() and not ln.strip().startswith("#")
     ]
-    if "#EXT-X-STREAM-INF" in text and not variants:
-        return False, status, "master has no variant URI"
     if not variants:
-        # Already a media playlist (single rendition).
-        return _probe_media_playlist(url, text, referer, status, timeout)
+        return False, status, "master has no variant URI"
 
     variant_url = urljoin(url, variants[0])
     v_status, _, v_body = _get(variant_url, headers=headers, timeout=timeout)

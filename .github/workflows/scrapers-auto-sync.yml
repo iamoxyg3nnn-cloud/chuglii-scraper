@@ -164,6 +164,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: python -X utf8 scraper/categories/studios/translate_backfill.py --limit 2000 || true
 
+      - name: Revalidate Dead Streams (OnlyFans)
+        # Layer 2 of the dead-video gate. Ingest (Layer 1) cannot know that a
+        # CDN object will be deleted tomorrow: uncut-x lost 3,080 R2 objects
+        # out of 4,445 videos. This re-probes the least recently verified rows,
+        # stamps survivors and soft-deletes (status='dead') the rest so they
+        # drop out of the public feed without losing the row.
+        if: ${{ !cancelled() }}
+        run: python -X utf8 scraper/categories/onlyfans/verify_dead.py --limit 200 || true
+
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can
         # poison known-ID caches, and cancellation must remain a hard stop.

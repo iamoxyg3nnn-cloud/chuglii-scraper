@@ -53,6 +53,24 @@ def test_hls_alive_when_master_variant_and_segment_all_serve(monkeypatch):
     assert alive is True and status == 200 and "ok" in detail
 
 
+def test_hls_media_playlist_is_probed_directly(monkeypatch):
+    """A per-rendition URL (segments, no STREAM-INF) is valid input.
+
+    Regression: sources that store the rendition rather than the master had
+    their .ts lines read as 'variants', so every one of them was reported dead
+    with 'variant has no segments'.
+    """
+    monkeypatch.setattr(
+        stream_check, "_get",
+        fake_get({
+            "720p/video.m3u8": (200, {"content-type": "application/vnd.apple.mpegurl"}, VARIANT),
+            "seg_00000.ts": (206, {"content-type": "video/mp2t"}, b"\x47" * 64),
+        }),
+    )
+    alive, status, detail = stream_check.probe_hls("https://cdn.test/x/720p/video.m3u8")
+    assert alive is True and status == 200 and detail == "hls ok"
+
+
 def test_hls_dead_when_master_404(monkeypatch):
     """The R2 case: a signed URL that resolves to a missing object."""
     monkeypatch.setattr(stream_check, "_get", fake_get({"index.m3u8": (404, {}, b"")}))

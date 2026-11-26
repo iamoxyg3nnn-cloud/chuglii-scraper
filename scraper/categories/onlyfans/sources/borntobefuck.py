@@ -254,7 +254,14 @@ def parse_master(master_url: str) -> List[Dict[str, Any]]:
     servers: List[Dict[str, Any]] = []
     for attrs, uri in _RE_STREAM_INF.findall(text):
         res_match = re.search(r"RESOLUTION=(\d+)x(\d+)", attrs, re.I)
-        height = int(res_match.group(2)) if res_match else 0
+        # Quality class is the SHORT side. Using the height alone scored a
+        # portrait 720x1280 clip as "1280p" (score 1280), outranking genuine
+        # 1080p landscape files. min(w, h) labels both orientations correctly.
+        if res_match:
+            width_px, height_px = int(res_match.group(1)), int(res_match.group(2))
+            height = min(width_px, height_px)
+        else:
+            height = 0
         label = {1080: "1080p Full HD", 720: "720p HD", 480: "480p SD"}.get(height, f"{height}p" if height else "auto")
         servers.append(
             {

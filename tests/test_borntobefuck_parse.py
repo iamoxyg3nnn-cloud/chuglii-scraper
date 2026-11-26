@@ -117,3 +117,34 @@ def test_removed_page_is_not_ingested(monkeypatch):
 
     monkeypatch.setattr(b, "fetch_page", lambda url: R())
     assert b.scrape_metadata_from_watch("16462") is None
+
+
+# ─── Quality class (short side), not raw height ──────────────────────────────
+
+def _master(payload: str):
+    class Page:
+        status = 200
+        html_content = payload
+    return Page()
+
+
+def test_parse_master_scores_landscape_by_short_side(monkeypatch):
+    """1920x1080 must be 1080p, not 1080-by-height luck."""
+    master = (
+        '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n1080p/index.m3u8\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=1280x720\n720p/index.m3u8\n'
+    )
+    monkeypatch.setattr(b._net, "fetch", lambda *a, **k: _master(master))
+    servers = b.parse_master("https://cdn.test/tenant/uuid/index.m3u8")
+    assert servers[0]["quality_score"] == 1080
+    assert servers[0]["quality_label"] == "1080p Full HD"
+    assert servers[-1]["quality_score"] == 720
+
+
+def test_parse_master_portrait_is_not_promoted_above_landscape_1080(monkeypatch):
+    """A portrait 720x1280 clip used to score 1280 -- above real 1080p."""
+    master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=720x1280\n720p/index.m3u8\n'
+    monkeypatch.setattr(b._net, "fetch", lambda *a, **k: _master(master))
+    servers = b.parse_master("https://cdn.test/tenant/uuid/index.m3u8")
+    assert servers[0]["quality_score"] == 720
+    assert servers[0]["quality_label"] == "720p HD"

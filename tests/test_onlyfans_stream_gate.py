@@ -255,13 +255,26 @@ def test_enrich_detail_drops_unplayable_stream(monkeypatch):
 
 def test_enrich_detail_builds_servers_for_live_stream(monkeypatch):
     monkeypatch.setattr(uncutx, "verify_stream", lambda *a, **k: (True, 206, "mp4 ok"))
-    monkeypatch.setattr(uncutx, "_ffprobe_duration", lambda url: 754)
+    # One header-only ffprobe call now yields BOTH duration and height, so the
+    # quality label reflects the real file instead of a hardcoded 1080p.
+    monkeypatch.setattr(uncutx, "_probe_media", lambda url: (754, 1080))
     card = {"source_post_id": "a1", "video_url": "https://media.uncut-x.com/x.mp4", "title": "t"}
     out = uncutx.enrich_detail(card)
     assert out["servers"][0]["type"] == "direct_mp4"
+    assert out["servers"][0]["quality_score"] == 1080
     assert out["full_video_url"] == "https://media.uncut-x.com/x.mp4"
     assert out["duration_seconds"] == 754
     assert out["duration_formatted"] == "12:34"
+
+
+def test_enrich_detail_labels_a_720p_file_as_720p(monkeypatch):
+    """Regression: every uncut-x row claimed '1080p Full HD'; most are 720p."""
+    monkeypatch.setattr(uncutx, "verify_stream", lambda *a, **k: (True, 206, "mp4 ok"))
+    monkeypatch.setattr(uncutx, "_probe_media", lambda url: (100, 720))
+    card = {"source_post_id": "a2", "video_url": "https://media.uncut-x.com/y.mp4", "title": "t"}
+    out = uncutx.enrich_detail(card)
+    assert out["servers"][0]["quality_label"] == "720p HD"
+    assert out["servers"][0]["quality_score"] == 720
 
 
 def test_fmt_duration():

@@ -256,6 +256,72 @@ def _ffprobe_duration(url: str) -> Optional[int]:
         return None
 
 
+def _quality_for_height(height: Optional[int]) -> Tuple[str, int]:
+    """Map a measured pixel height to a quality label + score.
+
+    uncut-x exposes exactly ONE ``video_url`` per row and no resolution field,
+    so the old code simply claimed "1080p Full HD" for every video. Labelling a
+    720p file as 1080p poisons the ranking the site uses to order mirrors and
+    to show quality badges, so the label is now measured.
+    """
+    if not height:
+        return "HD", 720
+    if height >= 2160:
+        return "4K UHD", 2160
+    if height >= 1440:
+        return "1440p QHD", 1440
+    if height >= 1080:
+        return "1080p Full HD", 1080
+    if height >= 720:
+        return "720p HD", 720
+    if height >= 480:
+        return "480p SD", 480
+    return f"{height}p", height
+
+
+def _probe_media(url: str) -> Tuple[Optional[int], Optional[int]]:
+    """(duration_seconds, height) from ONE header-only ffprobe call.
+
+    Both values come from the same invocation: probing twice per video would
+    double the most expensive part of enrichment.
+    """
+    if not _DURATION_ENABLED:
+        return None, None
+    exe = shutil.which("ffprobe")
+    if not exe:
+        return None, None
+    try:
+        proc = subprocess.run(
+            [
+                exe, "-v", "error",
+                "-probesize", "32768",
+                "-analyzeduration", "500000",
+                "-rw_timeout", "8000000",
+                "-show_entries", "format=duration:stream=height",
+                "-of", "json",
+                "-user_agent", "Mozilla/5.0", url,
+            ],
+            capture_output=True, text=True, timeout=12,
+        )
+        data = json.loads(proc.stdout or "{}")
+    except Exception:
+        return None, None
+
+    duration = None
+    try:
+        seconds = float((data.get("format") or {}).get("duration"))
+        duration = int(round(seconds)) if seconds > 0 else None
+    except (TypeError, ValueError):
+        duration = None
+
+    heights = [
+        int(stream.get("height"))
+        for stream in (data.get("streams") or [])
+        if isinstance(stream.get("height"), (int, float)) and stream.get("height")
+    ]
+    return duration, (max(heights) if heights else None)
+
+
 def _fmt_duration(seconds: Optional[int]) -> Optional[str]:
     if not seconds or seconds <= 0:
         return None
@@ -291,19 +357,21 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
         )
         return out
 
-    duration = out.get("duration_seconds") or _ffprobe_duration(url)
+    probed_duration, height = _probe_media(url)
+    duration = out.get("duration_seconds") or probed_duration
     out["duration_seconds"] = duration
     out["duration_formatted"] = _fmt_duration(duration)
     out["full_video_url"] = url
     out["video_mime_type"] = "video/mp4"
+    label, score = _quality_for_height(height)
     out["servers"] = [
         {
-            "name": "Uncut-X Direct",
+            "name": f"Uncut-X Direct {label}",
             "server": "Uncut-X",
             "embed_url": url,
             "type": "direct_mp4",
-            "quality_label": "1080p Full HD",
-            "quality_score": 1080,
+            "quality_label": label,
+            "quality_score": score,
         }
     ]
     return out

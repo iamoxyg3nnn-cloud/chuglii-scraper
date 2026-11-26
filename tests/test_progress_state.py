@@ -160,6 +160,7 @@ def _patch_cycle_dependencies(monkeypatch):
         "run_viral_mms_sites_sync",
         "run_japanese_jav_sync",
         "run_myanmar_sync",
+        "run_samusar_sync",
         "run_onlyfans_sync",
         "run_voyeurhouse_sync",
         "run_chinese_sync",
@@ -302,8 +303,10 @@ def test_unified_cycle_skips_all_feeds_while_supabase_is_down(monkeypatch):
     monkeypatch.setattr(unified, "init_known_id_caches", lambda: called.append("caches"))
     for name in (
         "run_viral_mms_sync",
+        "run_viral_mms_sites_sync",
         "run_japanese_jav_sync",
         "run_myanmar_sync",
+        "run_samusar_sync",
         "run_onlyfans_sync",
         "run_voyeurhouse_sync",
     ):
@@ -313,8 +316,10 @@ def test_unified_cycle_skips_all_feeds_while_supabase_is_down(monkeypatch):
 
     assert result == {
         "mms": 0,
+        "mms_sites": 0,
         "jav": 0,
         "myanmar": 0,
+        "samusar": 0,
         "onlyfans": 0,
         "voyeurhouse": 0,
         "chinese": 0,

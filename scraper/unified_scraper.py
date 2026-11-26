@@ -493,6 +493,7 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
             if not cursor_records:
                 log(f"    Historical Page {curr_page}: all releases already indexed (or empty).")
             myanmar_state["current_page"] = curr_page + 1
+            myanmar_state["last_page"] = curr_page + 1
             set_scraper_checkpoint("myanmar", myanmar_state)
             save_myanmar_checkpoint(myanmar_state)
             log(f"  [✓] Myanmar Checkpoint: Cursor advanced to page {curr_page + 1} (Saved to Supabase)")
@@ -515,8 +516,10 @@ def run_samusar_sync(check_head: bool = True, pages: int = 1, workers: int = 4) 
         from scraper.categories.myanmar.samusar_pipeline import run_pipeline
 
         res = run_pipeline(pages=pages, check_head=check_head, workers=workers)
+        FEED_STATUS["samusar"] = res.get("status", "completed")
         return int(res.get("upserted", 0) or 0)
     except Exception as e:
+        FEED_STATUS["samusar"] = "failed"
         log(f"  [!] Samusar Myanmar sync error: {e}")
         return 0
 
@@ -1066,8 +1069,10 @@ def run_unified_sync_cycle(
         log("[PAUSE] Supabase unavailable. No feed will run until Supabase is back online.")
         return {
             "mms": 0,
+            "mms_sites": 0,
             "jav": 0,
             "myanmar": 0,
+            "samusar": 0,
             "onlyfans": 0,
             "voyeurhouse": 0,
             "chinese": 0,

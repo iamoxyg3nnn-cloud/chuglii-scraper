@@ -301,7 +301,7 @@ def scrape_page_with_status(page_num: int, tag: str, known_ids: Set[str], worker
         for future in as_completed(futures):
             try:
                 res = future.result()
-                if res and res.get("source_post_id"):
+                if res and res.get("source_post_id") and (res.get("full_video_url") or res.get("stream_url")):
                     enriched_items.append(res)
             except Exception as e:
                 print(f"[!] Error enriching item: {e}")

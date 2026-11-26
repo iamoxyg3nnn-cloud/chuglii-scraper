@@ -32,6 +32,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scraper.categories.onlyfans.sources import borntobefuck as btb  # noqa: E402
+from scraper.categories.onlyfans.polish import format_duration  # noqa: E402
 
 SITE = "borntobefuck"
 CHECKPOINT_KEY = "onlyfans_sweep_borntobefuck"
@@ -123,6 +124,10 @@ def _probe_one(vid_num: int) -> Tuple[str, Optional[Dict[str, Any]]]:
     )
     if duration:
         enriched["duration_seconds"] = duration
+        # The DB upsert defaults the display string to '10:00' when a record
+        # arrives without one, which is a lie for anything that is not exactly
+        # ten minutes. Derive it here from the seconds we just measured.
+        enriched["duration_formatted"] = format_duration(duration)
     return key, enriched
 
 def sweep(

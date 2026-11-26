@@ -137,3 +137,26 @@ def test_batches_flush_at_the_batch_size(monkeypatch):
     sweep_ids.sweep(minutes=5, min_id=100, max_id=111)
 
     assert [len(b) for b in h.flushed] == [5, 5, 2]
+
+
+def test_sweep_writes_the_display_string_it_measured(monkeypatch):
+    """A measured duration must arrive with its display string.
+
+    The DB upsert falls back to COALESCE(duration_formatted, '10:00'), so a
+    record carrying only duration_seconds got stamped "10:00" -- the site then
+    showed ten minutes for a 38-minute video. 596 of 897 borntobefuck rows were
+    wrong this way before the sweep supplied the formatted value itself.
+    """
+    h = Harness(monkeypatch, duration=2293)
+    sweep_ids.sweep(minutes=5, min_id=100, max_id=101)
+
+    record = h.flushed[0][0]
+    assert record["duration_seconds"] == 2293
+    assert record["duration_formatted"] == "38:13"
+
+
+def test_sweep_formats_past_an_hour_with_hours(monkeypatch):
+    h = Harness(monkeypatch, duration=6684)
+    sweep_ids.sweep(minutes=5, min_id=100, max_id=101)
+
+    assert h.flushed[0][0]["duration_formatted"] == "1:51:24"

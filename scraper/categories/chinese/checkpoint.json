@@ -3,157 +3,157 @@
   "uxj838238:20110496": {
     "max_pages": 912,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 12
   },
   "uxj838238:20030496": {
     "max_pages": 555,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 11
   },
   "uxj838238:20040496": {
     "max_pages": 835,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 10
   },
   "uxj838238:20050496": {
     "max_pages": 1581,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 9
   },
   "uxj838238:20090496": {
     "max_pages": 1956,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 9
   },
   "uxj838238:20100496": {
     "max_pages": 185,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 9
   },
   "uxj838238:20060496": {
     "max_pages": 68,
     "stall_count": 0,
-    "current_page": 6
+    "current_page": 9
   },
   "uxj838238:20080496": {
     "max_pages": 529,
-    "current_page": 5
+    "current_page": 8
   },
   "uxj838238:20120496": {
     "max_pages": 317,
-    "current_page": 4
+    "current_page": 7
   },
   "uxj838238:20010496": {
     "max_pages": 179,
-    "current_page": 4
+    "current_page": 7
   },
   "uxj838238:20020496": {
     "max_pages": 83,
-    "current_page": 4
+    "current_page": 7
   },
   "uxj838238:20140496": {
     "max_pages": 50,
-    "current_page": 4
+    "current_page": 7
   },
   "uxj838238:20150496": {
     "max_pages": 1033,
-    "current_page": 4
+    "current_page": 7
   },
   "uxj838238:20160496": {
     "max_pages": 134,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20170496": {
     "max_pages": 775,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20180496": {
     "max_pages": 84,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20190496": {
     "max_pages": 225,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20200496": {
     "max_pages": 253,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20210496": {
     "max_pages": 613,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20220496": {
     "max_pages": 191,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20230496": {
     "max_pages": 90,
-    "current_page": 2
+    "current_page": 5
   },
   "uxj838238:20240496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 307,
+    "current_page": 3
   },
   "uxj838238:20250496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 51,
+    "current_page": 3
   },
   "uxj838238:20260496": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 3
   },
   "uxj838238:20270496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 100,
+    "current_page": 2
   },
   "uxj838238:20380496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 229,
+    "current_page": 2
   },
   "uxj838238:20400496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 145,
+    "current_page": 2
   },
   "uxj838238:20390496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 75,
+    "current_page": 2
   },
   "uxj838238:20350496": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "uxj838238:20370496": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "uxj838238:20340496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 63,
+    "current_page": 2
   },
   "uxj838238:20360496": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 94,
+    "current_page": 2
   },
   "uxj838238:19920497": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 5743,
+    "current_page": 2
   },
   "uxj838238:19960497": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "uxj838238:19980497": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "uxj838238:19990497": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 232,
+    "current_page": 2
   },
   "uxj838238:19950497": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 276,
+    "current_page": 2
   },
   "uxj838238:20070496": {
     "max_pages": 50,
@@ -199,5 +199,5 @@
     "max_pages": 50,
     "current_page": 1
   },
-  "timestamp": "2026-11-25 17:23:24"
+  "timestamp": "2026-11-26 06:56:01"
 }

@@ -29,11 +29,27 @@ def rpc_result_succeeded(result: Any) -> bool:
     return result is not None and not (isinstance(result, dict) and result.get("success") is False)
 
 
+_CLIENT_LOCK = __import__("threading").Lock()
+_CLIENT_CACHE: Optional[object] = None
+
+
 def get_supabase_client() -> Client:
-    """Returns an authenticated Supabase client."""
+    """Returns an authenticated Supabase client (process-wide singleton).
+
+    Building a client per call re-created the underlying HTTP session every
+    time. That is invisible for the occasional RPC but ruinous in a crawl
+    loop: the dead-video gate writes one health row per video and was paying
+    a fresh client (and TLS setup) for each of 1,000 videos.
+    """
+    global _CLIENT_CACHE
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env")
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    if _CLIENT_CACHE is not None:
+        return _CLIENT_CACHE  # type: ignore[return-value]
+    with _CLIENT_LOCK:
+        if _CLIENT_CACHE is None:
+            _CLIENT_CACHE = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _CLIENT_CACHE  # type: ignore[return-value]
 
 def apply_scraper_schema() -> Dict[str, Any]:
     """

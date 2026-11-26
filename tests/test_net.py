@@ -195,6 +195,20 @@ def test_oversized_body_is_not_cached(monkeypatch):
     assert len(calls) == 2, "an oversized page should not have been cached"
 
 
+def test_challenge_fallback_can_be_disabled(monkeypatch):
+    """Some endpoints answer 403 for 'restricted', not Cloudflare: never launch
+    a browser for those (it costs ~20s and cannot help)."""
+    calls = install_plain(monkeypatch, [FakeResp(403, b"")])
+
+    def must_not_run(url, host):
+        raise AssertionError("solver launched despite accept_challenge_fallback=False")
+
+    monkeypatch.setattr(net, "_solve_cloudflare", must_not_run)
+    page = net.fetch("https://h.test/frag", retries=1, accept_challenge_fallback=False)
+    assert page is not None and page.status == 403 and page.challenge is True
+    assert len(calls) == 1
+
+
 def test_cf_cooldown_blocks_further_solves(monkeypatch):
     net._CF_COOLDOWN_UNTIL["cf.test"] = net.time.time() + 60
     assert net._solve_cloudflare("https://cf.test/", "cf.test") is None

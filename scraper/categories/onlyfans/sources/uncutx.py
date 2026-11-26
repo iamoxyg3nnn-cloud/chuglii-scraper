@@ -234,11 +234,18 @@ def _ffprobe_duration(url: str) -> Optional[int]:
     try:
         proc = subprocess.run(
             [
-                exe, "-v", "error", "-show_entries", "format=duration",
+                exe, "-v", "error",
+                # Read only the container header. Without these ffprobe can pull
+                # the whole remote file and stall for ~25s per video (measured
+                # on the first backfill run, which took >40min on 1000 rows).
+                "-probesize", "32768",
+                "-analyzeduration", "500000",
+                "-rw_timeout", "8000000",
+                "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 "-user_agent", "Mozilla/5.0", url,
             ],
-            capture_output=True, text=True, timeout=25,
+            capture_output=True, text=True, timeout=12,
         )
         raw = (proc.stdout or "").strip().splitlines()
         if not raw:

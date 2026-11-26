@@ -289,6 +289,15 @@ def run_site_crawl(
                 raw_servers = raw.get("servers") or []
                 raw_stream = raw.get("full_video_url")
                 if not raw_stream and not raw_servers:
+                    # A source may prove a stream is gone (restricted, 404, dead
+                    # CDN object). Remember those so a dead catalogue is not
+                    # re-probed on every future cycle.
+                    if raw.get("stream_dead"):
+                        dead_key = f"{site_key}:{raw.get('source_post_id')}"
+                        known_ids.add(dead_key)
+                        seen_ids.add(dead_key)
+                        print(f"      [SKIP DEAD STREAM] '{str(raw.get('title'))[:60]}' is unplayable. Recorded dead.")
+                        continue
                     is_photo_set = raw.get("gallery_url") or any(w in raw.get("title", "").lower() for w in ["photo", "photos", "set", "gallery"])
                     if is_photo_set:
                         dead_key = f"{site_key}:{raw.get('source_post_id')}"

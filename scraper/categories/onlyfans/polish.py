@@ -165,6 +165,23 @@ def prioritize_servers(servers: List[Dict[str, Any]]) -> tuple[Optional[str], Li
 
     return primary, sorted_servers, label, best_score
 
+def format_duration(seconds: Optional[int]) -> Optional[str]:
+    """Seconds -> ``M:SS`` / ``H:MM:SS``. None when unknown.
+
+    Sources that only expose a raw second count (borntobefuck's listing cards)
+    would otherwise fall through to the table default ``10:00``.
+    """
+    try:
+        total = int(seconds or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
 def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     """
     Polishes raw scraped OnlyFans item into a schema-compliant record.
@@ -233,6 +250,8 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
             continue
         seen_tags.add(clean_t)
         tags.append(clean_t)
+
+    _duration_seconds = int(raw_item.get("duration_seconds") or 0) or None
     return {
         "source_site": source_site,
         "source_post_id": post_id,
@@ -246,8 +265,14 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
         "clean_thumbnail_url": valid_thumb,
         "quality_label": quality_label,
         "quality_score": quality_score,
-        "duration_seconds": int(raw_item.get("duration_seconds") or 0) or None,
-        "duration_formatted": (str(raw_item.get("duration_formatted") or "").strip() or None),
+        "duration_seconds": _duration_seconds,
+        # Derive the display string when a source only knows the seconds. Without
+        # this the table default '10:00' is stored, which is a lie for every
+        # video that is not exactly ten minutes.
+        "duration_formatted": (
+            str(raw_item.get("duration_formatted") or "").strip()
+            or format_duration(_duration_seconds)
+        ),
         "views_count": int(raw_item.get("views_count", 0)),
         "views_raw": str(raw_item.get("views_raw", "0")),
         "rating_score": float(raw_item.get("rating_score", 95.0)),

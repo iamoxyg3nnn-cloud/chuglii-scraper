@@ -528,6 +528,7 @@ def fetch(
     allow_cache: bool = True,
     cache_ttl: Optional[int] = None,
     allow_dead_cache: bool = True,
+    accept_challenge_fallback: bool = True,
     min_interval: Optional[float] = None,
     max_backoff: float = 8.0,
 ) -> Optional[Page]:
@@ -573,7 +574,7 @@ def fetch(
             return page
 
         if page.challenge or page.status in (403, 503):
-            solved = _solve_cloudflare(url, host)
+            solved = _solve_cloudflare(url, host) if accept_challenge_fallback else None
             if solved is not None:
                 _cache_put(url, solved, solved.body)
                 return solved

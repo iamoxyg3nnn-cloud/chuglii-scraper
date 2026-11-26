@@ -85,6 +85,15 @@ jobs:
             --limit "${{ github.event.inputs.revalidate_limit || '1500' }}" \
             --workers 12
 
+      - name: Backfill Missing Durations
+        # influencersgonewild publishes no duration and sheeshfans only
+        # sometimes does, so their rows used to inherit the table default 600 s
+        # and read "10:00". Ingest now measures what it can; this drains the
+        # historical backlog a bounded batch at a time -- no manual repair.
+        run: |
+          python -X utf8 scraper/tools/onlyfans_duration_backfill.py \
+            --minutes 10 --workers 12
+
       - name: Health Gate
         # Deliberately NOT suffixed with `|| true`: a source that silently stops
         # producing must mark this run failed instead of looking healthy.

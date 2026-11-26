@@ -81,3 +81,80 @@ def probe_media(
         if isinstance(stream.get("height"), (int, float)) and stream.get("height")
     ]
     return duration, (max(heights) if heights else None)
+
+
+# ─── MP4 header parsing (no ffmpeg) ─────────────────────────────────────────
+
+def mp4_duration_from_header(
+    url: str,
+    referer: Optional[str] = None,
+    timeout: float = 8.0,
+    window: int = 524288,
+) -> Optional[int]:
+    """Duration of an MP4/MOV from its ``moov/mvhd`` atom, via two small GETs.
+
+    ffprobe is the general answer, but against these CDNs it is both slow (5 s
+    per file at concurrency 1) and flaky under parallel TLS handshakes, so
+    measuring ~4,000 videos that way takes hours. The duration lives in a fixed
+    layout that a couple of ranged requests can read:
+
+        mvhd: size(4) 'mvhd'(4) version(1) flags(3) created(4) modified(4)
+              timescale(4) duration(4)
+
+    ``moov`` is usually at the front (faststart) but can be at the end, so the
+    head is tried first and the tail second.
+    """
+    try:
+        import httpx
+    except Exception:                                    # pragma: no cover
+        return None
+
+    headers = {"user-agent": DEFAULT_UA, "accept": "*/*"}
+    if referer:
+        headers["referer"] = referer
+
+    def _get(byte_range: str) -> bytes:
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                res = client.get(url, headers={**headers, "range": byte_range})
+                if res.status_code in (200, 206):
+                    return res.content
+        except Exception:
+            pass
+        return b""
+
+    # Tail first: these CDNs serve non-faststart files, where moov (and mvhd
+    # right at its start) sits at the end, so one request usually settles it.
+    for byte_range in (f"bytes=-{window}", f"bytes=0-{window - 1}"):
+        blob = _get(byte_range)
+        seconds = _mvhd_duration(blob)
+        if seconds:
+            return seconds
+    return None
+
+
+def _mvhd_duration(blob: bytes) -> Optional[int]:
+    """Parse ``mvhd`` out of a raw byte window, or return None."""
+    if not blob:
+        return None
+    idx = blob.find(b"mvhd")
+    while idx != -1:
+        try:
+            version = blob[idx + 4]
+            if version == 1:
+                # 64-bit creation/modification, then timescale (4) + duration (8)
+                timescale = int.from_bytes(blob[idx + 24:idx + 28], "big")
+                duration = int.from_bytes(blob[idx + 28:idx + 36], "big")
+            else:
+                # creation(4) modification(4) timescale(4) duration(4)
+                timescale = int.from_bytes(blob[idx + 16:idx + 20], "big")
+                duration = int.from_bytes(blob[idx + 20:idx + 24], "big")
+        except IndexError:
+            return None
+        if timescale > 0 and duration > 0:
+            seconds = duration / timescale
+            # 0xFFFFFFFF marks an unknown duration in fragmented MP4s.
+            if 0 < seconds < 24 * 3600:
+                return int(round(seconds))
+        idx = blob.find(b"mvhd", idx + 1)
+    return None

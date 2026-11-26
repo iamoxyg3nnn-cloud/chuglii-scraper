@@ -1,0 +1,85 @@
+name: OnlyFans Maintenance (sweep, revalidate, health)
+
+# Why this is a SEPARATE workflow and not a step in scrapers-auto-sync.yml:
+#
+# The fleet runs a 300-minute daemon inside a job whose timeout is 355 minutes.
+# The onlyfans maintenance steps used to run AFTER that daemon, so
+# daemon (300) + sweep (60) = 360 minutes exceeded the timeout and they could
+# never complete. The workflow-watchman also cancels fleet runs around the
+# 5.5 h mark. Net effect: the archive sweep and the dead-stream revalidation
+# were configured but unreachable -- the sweep cursor would never advance and
+# nothing would ever be revalidated in CI.
+#
+# Maintenance is independent of feed ingestion, so it gets its own schedule and
+# its own concurrency group. It always runs, and it finishes in well under an
+# hour for the sweep budget plus a few minutes for the rest.
+
+on:
+  schedule:
+    # Offset from the fleet's 6-hourly trigger so the two do not start together.
+    - cron: "25 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      sweep_minutes:
+        description: "Archive sweep wall-clock budget (minutes)"
+        required: false
+        default: "90"
+      revalidate_limit:
+        description: "Rows to re-probe per source"
+        required: false
+        default: "200"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onlyfans-maintenance
+  # Serialise: a second run must not race the sweep cursor or double-probe.
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    name: Sweep archive + revalidate streams + health gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    env:
+      PYTHONUNBUFFERED: "1"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://supabase.chuglii.in' }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      - name: Install Scraper Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+
+      - name: Sweep Archive Id Space (borntobefuck)
+        # Listings show a rolling ~1-month window (597 of ~23k ids), so the
+        # archive is only reachable by walking the id space. The cursor lives in
+        # Supabase, so a run that stops early resumes exactly where it left off.
+        run: |
+          python -X utf8 scraper/categories/onlyfans/sweep_ids.py \
+            --minutes "${{ github.event.inputs.sweep_minutes || '90' }}" \
+            --workers 6
+
+      - name: Revalidate Dead Streams
+        # Layer 2 of the dead-video gate: CDN objects disappear after ingest.
+        run: |
+          python -X utf8 scraper/categories/onlyfans/verify_dead.py \
+            --limit "${{ github.event.inputs.revalidate_limit || '200' }}"
+
+      - name: Health Gate
+        # Deliberately NOT suffixed with `|| true`: a source that silently stops
+        # producing must mark this run failed instead of looking healthy.
+        run: python -X utf8 scraper/tools/onlyfans_health.py --max-stale-days 7

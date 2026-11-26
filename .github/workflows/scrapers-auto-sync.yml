@@ -164,29 +164,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: python -X utf8 scraper/categories/studios/translate_backfill.py --limit 2000 || true
 
-      - name: Sweep Archive Id Space (OnlyFans / borntobefuck)
-        # Listings only ever show a rolling ~1-month window (597 of ~23k ids), so
-        # the archive is only reachable by walking the id space directly. The
-        # cursor is persisted in Supabase, so each run continues where the last
-        # one stopped and a killed run still keeps its progress.
-        if: ${{ !cancelled() }}
-        run: python -X utf8 scraper/categories/onlyfans/sweep_ids.py --minutes 60 --workers 6 || true
-
-      - name: Revalidate Dead Streams (OnlyFans)
-        # Layer 2 of the dead-video gate. Ingest (Layer 1) cannot know that a
-        # CDN object will be deleted tomorrow: uncut-x lost 3,080 R2 objects
-        # out of 4,445 videos. This re-probes the least recently verified rows,
-        # stamps survivors and soft-deletes (status='dead') the rest so they
-        # drop out of the public feed without losing the row.
-        if: ${{ !cancelled() }}
-        run: python -X utf8 scraper/categories/onlyfans/verify_dead.py --limit 200 || true
-
-      - name: Health Gate (OnlyFans sources)
-        # Deliberately NOT suffixed with `|| true`. Every ingest step above is,
-        # so a source that silently stops producing looks exactly like a
-        # healthy run: green steps, empty site. This fails the run instead.
-        if: ${{ !cancelled() }}
-        run: python -X utf8 scraper/tools/onlyfans_health.py --max-stale-days 7
+      # Archive sweep, dead-stream revalidation and the health gate are NOT
+      # here: the 300-minute daemon plus a 60-minute sweep exceeded this job's
+      # 355-minute timeout, so they never ran. They now live in
+      # onlyfans-maintenance.yml, which is scheduled independently.
 
       - name: Persist Scraper Progress Checkpoints
         # Never commit/push checkpoints from a cancelled run: partial cycles can

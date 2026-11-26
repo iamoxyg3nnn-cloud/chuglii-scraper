@@ -506,6 +506,21 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
         return 0
 
 
+def run_samusar_sync(check_head: bool = True, pages: int = 1, workers: int = 4) -> int:
+    """Runs isolated Samusar Myanmar ingestion (scraper.samusar_videos)."""
+    log("\n" + "=" * 65)
+    log("  [FEED 3b] Samusar Myanmar Scraper | Isolated Schema")
+    log("=" * 65)
+    try:
+        from scraper.categories.myanmar.samusar_pipeline import run_pipeline
+
+        res = run_pipeline(pages=pages, check_head=check_head, workers=workers)
+        return int(res.get("upserted", 0) or 0)
+    except Exception as e:
+        log(f"  [!] Samusar Myanmar sync error: {e}")
+        return 0
+
+
 # ─── OnlyFans Leaks Ingestion Task ───────────────────────────────────────────
 
 def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
@@ -1084,6 +1099,8 @@ def run_unified_sync_cycle(
     jav_count = run_feed("supjav", run_japanese_jav_sync, check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
     human_jitter(1.5, 2.5)
     myanmar_count = run_feed("myanmar", run_myanmar_sync, check_head=check_head, workers=workers)
+    human_jitter(1.0, 2.0)
+    samusar_count = run_feed("samusar", run_samusar_sync, check_head=check_head, pages=1, workers=workers)
     human_jitter(1.5, 2.5)
     of_count = run_feed("onlyfans", run_onlyfans_sync, check_head=check_head, pages_per_site=of_pages)
     vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
@@ -1117,6 +1134,7 @@ def run_unified_sync_cycle(
     log(f"  - Viral Sites:  {mms_sites_count} new videos ingested")
     log(f"  - Japanese JAV: {jav_count} new videos ingested")
     log(f"  - Myanmar:      {myanmar_count} new videos ingested")
+    log(f"  - Samusar:      {samusar_count} new videos ingested")
     log(f"  - OnlyFans:     {of_count} new videos ingested")
     log(f"  - Voyeur House: {vh_count} new videos ingested")
     log(f"  - Chinese:      {cn_count} new items ingested")
@@ -1132,6 +1150,7 @@ def run_unified_sync_cycle(
         "mms_sites": mms_sites_count,
         "jav": jav_count,
         "myanmar": myanmar_count,
+        "samusar": samusar_count,
         "onlyfans": of_count,
         "voyeurhouse": vh_count,
         "chinese": cn_count,
@@ -1339,6 +1358,7 @@ if __name__ == "__main__":
     parser.add_argument("--st-pages", type=int, default=1, help="Pages per studios site section to scrape per run")
     parser.add_argument("--deep-chunk-pages", type=int, default=20, help="Pages per zone per deep-backfill chunk (default: 20)")
     parser.add_argument("--viral-mms-sites", action="store_true", help="Run only isolated Viral MMS sites sync")
+    parser.add_argument("--samusar", action="store_true", help="Run only isolated Samusar Myanmar sync")
     parser.add_argument("--onlyfans", action="store_true", help="Run only the OnlyFans sync cycle")
     parser.add_argument("--voyeurhouse", action="store_true", help="Run only the Voyeur House sync cycle")
     parser.add_argument("--chinese", action="store_true", help="Run only the Chinese category sync cycle")
@@ -1359,6 +1379,11 @@ if __name__ == "__main__":
             run_viral_mms_sites_sync(check_head=args.check_head, pages_per_site=args.mms_pages, workers=args.workers)
         else:
             log("[STOP] Supabase unavailable; Viral MMS sites sync did not start.")
+    elif args.samusar:
+        if wait_for_supabase_before_cycle():
+            run_samusar_sync(check_head=args.check_head, pages=args.mms_pages, workers=args.workers)
+        else:
+            log("[STOP] Supabase unavailable; Samusar Myanmar sync did not start.")
     elif args.onlyfans:
         if wait_for_supabase_before_cycle():
             init_known_id_caches()

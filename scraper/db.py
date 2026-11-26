@@ -288,6 +288,43 @@ def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = N
     return response.data
 
 
+def upsert_samusar_videos_batch(polished_records: List[Dict[str, Any]], retries: int = 4) -> Any:
+    """Batch upserts records strictly into the isolated scraper.samusar_videos table."""
+    if not polished_records:
+        return {"success": True, "count": 0}
+    res = call_supabase_rpc("scraper_upsert_samusar_videos", {"items": polished_records}, retries=retries)
+    if rpc_result_succeeded(res):
+        return res
+    for attempt in range(retries):
+        try:
+            supabase = get_supabase_client()
+            response = supabase.rpc("scraper_upsert_samusar_videos", {"items": polished_records}).execute()
+            if rpc_result_succeeded(response.data):
+                return response.data
+            return {"success": False, "error": "RPC reported failure", "count": 0}
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[!] Supabase Samusar upsert failed after {retries} attempts: {e}")
+                return {"success": False, "error": str(e), "count": 0}
+            time.sleep((attempt + 1) * 3)
+
+
+def get_samusar_videos(source_site: Optional[str] = None, tag: Optional[str] = None, category: Optional[str] = None, search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+    """Retrieves stored videos strictly from scraper.samusar_videos table."""
+    supabase = get_supabase_client()
+    params = {
+        "p_source_site": source_site,
+        "p_tag": tag,
+        "p_category": category,
+        "p_search": search,
+        "p_sort": sort,
+        "p_limit": limit,
+        "p_offset": offset,
+    }
+    response = supabase.rpc("scraper_get_samusar_videos", params).execute()
+    return response.data or []
+
+
 # ─── Isolated OnlyFans Database Functions ───────────────────────────────────
 
 ONLYFANS_SOURCE_TABLE_RPC = {

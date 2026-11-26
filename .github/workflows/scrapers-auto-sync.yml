@@ -181,6 +181,9 @@ jobs:
             scraper/categories/japanese/known_post_ids.json \
             scraper/categories/myanmar/checkpoint.json \
             scraper/categories/myanmar/known_post_ids.json \
+            scraper/categories/myanmar/samusar_checkpoint.json \
+            scraper/categories/myanmar/samusar_known_post_ids.json \
+            scraper/categories/myanmar/samusar_progress.json \
             scraper/categories/onlyfans/checkpoint.json \
             scraper/categories/onlyfans/known_post_ids.json \
             scraper/categories/onlyfans/progress.json \

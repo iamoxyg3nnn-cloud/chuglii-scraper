@@ -160,6 +160,58 @@ def _supabase_ready(wait_seconds: int = 300) -> bool:
     return False
 
 
+def backlog_pages_remaining(targets: Optional[List[str]] = None) -> int:
+    """Total pages still unfetched across targets, from local checkpoints."""
+    total = 0
+    for target in (targets or list(TARGETS)):
+        try:
+            zones = collect_zone_states(target)
+        except Exception:
+            continue
+        total += sum(
+            max(0, int(z["max_pages"]) - int(z["current_page"]) + 1) for z in zones
+        )
+    return total
+
+
+def auto_arm_if_backlog(
+    min_pages: int = 200,
+    targets: Optional[List[str]] = None,
+) -> bool:
+    """Arm deep backfill automatically when a real backlog exists.
+
+    Deep mode used to be manual-only, which meant the archive grind stalled
+    until somebody remembered to run the CLI. It is now self-arming, but only
+    from code that also enforces a per-session budget (see
+    ``DEEP_SESSION_FRACTION`` in unified_scraper) and the stall/iteration
+    guards in :func:`run_deep_backfill`, so arming can no longer starve feeds.
+
+    Returns True only when the flag was just turned on.
+    """
+    try:
+        flag = get_flag()
+    except Exception:
+        return False
+    if flag.get("active"):
+        return False                       # already grinding; leave it alone
+
+    remaining = backlog_pages_remaining(targets)
+    if remaining < max(1, int(min_pages)):
+        return False
+
+    chosen = sorted(targets or TARGETS)
+    try:
+        ok = set_flag(targets=chosen, active=True)
+    except Exception:
+        return False
+    if ok:
+        print(
+            f"[DEEP] Auto-armed deep backfill for {', '.join(chosen)} "
+            f"({remaining} pages of backlog >= {min_pages} threshold)."
+        )
+    return bool(ok)
+
+
 def run_deep_backfill(
     targets: List[str],
     deadline: float,

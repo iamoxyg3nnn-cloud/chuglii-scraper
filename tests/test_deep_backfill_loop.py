@@ -152,6 +152,41 @@ def test_offline_supabase_stops_the_pass_without_crawling(fake_target):
     assert summary["stopped_at"] == "supabase_offline"
 
 
+def test_auto_arm_engages_only_with_real_backlog(monkeypatch):
+    """Deep mode now re-arms itself, but never on a trivial backlog."""
+    state = {"flag": {"active": False, "targets": []}, "set": []}
+
+    monkeypatch.setattr(deep_backfill, "get_flag", lambda: dict(state["flag"]))
+    monkeypatch.setattr(
+        deep_backfill,
+        "set_flag",
+        lambda targets=None, active=True: state["set"].append((sorted(targets or []), active)) or True,
+    )
+
+    monkeypatch.setattr(deep_backfill, "backlog_pages_remaining", lambda targets=None: 50)
+    assert deep_backfill.auto_arm_if_backlog(min_pages=200) is False
+    assert state["set"] == [], "armed on a 50-page backlog"
+
+    monkeypatch.setattr(deep_backfill, "backlog_pages_remaining", lambda targets=None: 31962)
+    assert deep_backfill.auto_arm_if_backlog(min_pages=200) is True
+    assert state["set"] and state["set"][0][1] is True
+
+
+def test_auto_arm_leaves_an_active_flag_alone(monkeypatch):
+    monkeypatch.setattr(deep_backfill, "get_flag", lambda: {"active": True, "targets": ["studios"]})
+    monkeypatch.setattr(deep_backfill, "set_flag", lambda *a, **k: pytest.fail("re-armed an active flag"))
+    monkeypatch.setattr(deep_backfill, "backlog_pages_remaining", lambda targets=None: 999999)
+    assert deep_backfill.auto_arm_if_backlog() is False
+
+
+def test_auto_arm_survives_flag_backend_failure(monkeypatch):
+    def boom():
+        raise RuntimeError("supabase down")
+
+    monkeypatch.setattr(deep_backfill, "get_flag", boom)
+    assert deep_backfill.auto_arm_if_backlog() is False
+
+
 def test_clear_flag_does_not_require_targets(monkeypatch):
     """`deep_backfill clear` called set_flag(active=False) and raised TypeError."""
     captured = {}

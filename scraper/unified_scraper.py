@@ -41,6 +41,15 @@ except Exception:
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
 
+# ─── Deep-backfill automation policy ────────────────────────────────────────
+# Deep mode grinds the archive backlog BEFORE the regular feed cycle. Left
+# unbounded it consumed an entire 5-hour session and every feed starved
+# (run 45742796072). It is now auto-armed when a backlog exists but hard-capped
+# to a fraction of the session, so feeds always get their share.
+DEEP_SESSION_FRACTION = float(os.environ.get("SCRAPER_DEEP_SESSION_FRACTION", "0.25"))
+DEEP_AUTOARM = os.environ.get("SCRAPER_DEEP_AUTOARM", "1") not in ("0", "false", "False", "")
+DEEP_AUTOARM_MIN_PAGES = int(os.environ.get("SCRAPER_DEEP_MIN_PAGES", "200"))
+
 for p in [str(CURRENT_DIR), str(PROJECT_ROOT)]:
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -1102,6 +1111,18 @@ def run_unified_sync_cycle(
 
 # ─── Continuous 24/7 Session Daemon (For GitHub Actions) ─────────────────────
 
+def deep_deadline_for_session(
+    start_time: float, max_seconds: float, handoff_deadline: float
+) -> float:
+    """Latest timestamp deep backfill may run until this session.
+
+    Always the earlier of the handoff guard and the session budget, so the
+    regular feed cycle keeps at least ``1 - DEEP_SESSION_FRACTION`` of the run.
+    """
+    budget = start_time + max_seconds * max(0.0, min(DEEP_SESSION_FRACTION, 0.9))
+    return min(handoff_deadline - 120, budget)
+
+
 def run_continuous_daemon(
     session_minutes: int = 300,
     interval_seconds: int = 60,
@@ -1136,6 +1157,25 @@ def run_continuous_daemon(
     log(f"  Head Check Cadence:  Every {HEAD_CHECK_INTERVAL / 60:.0f} min (Page 1)")
     log(f"  Streaming Logs:      ACTIVE (unbuffered)")
     log("=" * 65)
+
+    # Hard cap on how much of a session deep backfill may consume. Before this,
+    # the grinder was given the whole handoff deadline, so one stuck zone could
+    # (and did, on 2026-11-26) starve every regular feed for the session.
+    log(
+        f"  Deep budget:         {DEEP_SESSION_FRACTION:.0%} of session "
+        f"({max_seconds * DEEP_SESSION_FRACTION / 60:.0f}m max), auto-arm "
+        f"{'ON' if DEEP_AUTOARM else 'OFF'} at >={DEEP_AUTOARM_MIN_PAGES} pages backlog"
+    )
+
+    # Self-arming: resume the archive grind when a real backlog exists, so the
+    # operator no longer has to remember `deep_backfill.py set ...`.
+    if DEEP_AUTOARM:
+        try:
+            from scraper.deep_backfill import auto_arm_if_backlog
+
+            auto_arm_if_backlog(min_pages=DEEP_AUTOARM_MIN_PAGES)
+        except Exception as exc:
+            log(f"[!] Deep auto-arm skipped: {exc}")
 
     # Surface the HTTP layer's state so cache/Cloudflare behaviour is visible
     # in the run log instead of being invisible background magic.
@@ -1204,7 +1244,10 @@ def run_continuous_daemon(
                 log(f"\n[DEEP] Deep backfill ACTIVE for: {', '.join(_targets) or 'none'} - grinding BEFORE feed cycle")
                 run_deep_backfill(
                     targets=_targets,
-                    deadline=supabase_handoff_deadline - 120,
+                    deadline=min(
+                        supabase_handoff_deadline - 120,
+                        deep_deadline_for_session(start_time, max_seconds, supabase_handoff_deadline),
+                    ),
                     chunk_pages=deep_chunk_pages,
                 )
                 if time.time() >= supabase_handoff_deadline - 180:

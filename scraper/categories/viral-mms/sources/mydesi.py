@@ -9,8 +9,10 @@ from .base import (
     abs_url,
     clean_text,
     fetch_html,
+    infer_quality_label,
     is_ad_iframe,
     parse_soup,
+    pick_best_servers,
     verify_embed_alive,
     verify_stream_alive,
 )
@@ -113,29 +115,31 @@ def enrich_detail(card: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     servers: List[Dict[str, Any]] = []
     seen_streams = set()
 
-    raw_directs: List[str] = []
-    for node in soup.select("video source[src], video[src]"):
-        src = abs_url(BASE_URL, node.get("src"))
+    raw_directs: List[Tuple[str, str]] = []
+    for node in soup.select("video source[src], video source[data-src], video[src]"):
+        src = abs_url(BASE_URL, node.get("src") or node.get("data-src"))
         if src:
-            raw_directs.append(src)
+            q_hint = clean_text(node.get("label") or node.get("title") or node.get("data-res"))
+            raw_directs.append((src, q_hint))
     for m in re.finditer(r'https?://[^\s"\'<>\\]+\.(?:mp4|m3u8)(?:\?[^\s"\'<>\\]*)?', html, re.I):
         cand = m.group(0).strip()
         if "preview" not in cand.lower():
-            raw_directs.append(cand)
+            raw_directs.append((cand, ""))
 
-    for cand in raw_directs:
+    for cand, q_hint in raw_directs:
         if cand in seen_streams:
             continue
         alive, final_url = verify_stream_alive(cand, referer=detail_url, session=_SESSION)
         if alive and final_url and final_url not in seen_streams:
             seen_streams.add(final_url)
             mime_type = "application/x-mpegURL" if ".m3u8" in final_url.lower() else "direct_mp4"
+            qlabel = infer_quality_label(q_hint, final_url, default="HD")
             servers.append({
-                "name": "MyDesi Direct",
+                "name": f"MyDesi Direct ({qlabel})" if qlabel != "HD" else "MyDesi Direct",
                 "server": "MyDesi CDN",
                 "embed_url": final_url,
                 "type": mime_type,
-                "quality_label": "HD",
+                "quality_label": qlabel,
             })
 
     if not servers:
@@ -157,6 +161,7 @@ def enrich_detail(card: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     if not servers:
         return None, "dead"
 
+    servers = pick_best_servers(servers)
     primary = servers[0]
     og_img = soup.select_one("meta[property='og:image']")
     thumb = clean_text(og_img.get("content")) if og_img else ""

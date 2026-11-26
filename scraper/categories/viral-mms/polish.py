@@ -32,8 +32,8 @@ def parse_rating_score(rating_raw: Optional[str]) -> Optional[float]:
     except ValueError:
         return None
 
-def parse_duration_seconds(duration_str: Optional[str], duration_hint: Optional[int] = None) -> tuple[int, str]:
-    """Returns (duration_seconds, formatted_duration)."""
+def parse_duration_seconds(duration_str: Optional[str], duration_hint: Optional[int] = None) -> tuple[int, Optional[str]]:
+    """Returns (duration_seconds, formatted_duration_or_none)."""
     if duration_hint and duration_hint > 0:
         total_sec = int(duration_hint)
     elif duration_str:
@@ -46,6 +46,9 @@ def parse_duration_seconds(duration_str: Optional[str], duration_hint: Optional[
             total_sec = 0
     else:
         total_sec = 0
+
+    if total_sec <= 0:
+        return 0, None
 
     hours = total_sec // 3600
     minutes = (total_sec % 3600) // 60

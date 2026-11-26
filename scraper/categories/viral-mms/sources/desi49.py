@@ -10,8 +10,10 @@ from .base import (
     abs_url,
     clean_text,
     fetch_html,
+    infer_quality_label,
     is_ad_iframe,
     parse_soup,
+    pick_best_servers,
     verify_embed_alive,
     verify_stream_alive,
 )
@@ -38,7 +40,11 @@ def scrape_listing(page_num: int = 1) -> Tuple[List[Dict[str, Any]], Optional[in
     items: List[Dict[str, Any]] = []
     seen_urls = set()
 
-    for a in soup.select("a.thumb[href]"):
+    cards = soup.select("li.video") or soup.select("a.thumb[href]")
+    for node in cards:
+        a = node if getattr(node, "name", "") == "a" else node.select_one("a.thumb[href], a[href]")
+        if not a:
+            continue
         detail_url = abs_url(BASE_URL, a.get("href"))
         if not detail_url or detail_url in seen_urls:
             continue
@@ -51,7 +57,12 @@ def scrape_listing(page_num: int = 1) -> Tuple[List[Dict[str, Any]], Optional[in
             continue
 
         img = a.select_one("img")
-        title = clean_text(a.get("title")) or clean_text(img.get("alt") if img else "")
+        title_node = node.select_one("a.title") if getattr(node, "name", "") != "a" else None
+        title = (
+            clean_text(a.get("title"))
+            or clean_text(title_node.get_text(" ", strip=True) if title_node else "")
+            or clean_text(img.get("alt") if img else "")
+        )
         if not title:
             title = slug.replace("-", " ").title()
 
@@ -62,7 +73,8 @@ def scrape_listing(page_num: int = 1) -> Tuple[List[Dict[str, Any]], Optional[in
                 img.get("data-src") or img.get("data-lazy-src") or img.get("src"),
             )
 
-        dur_el = a.select_one(".duration, .time")
+        dur_el = node.select_one(".duration, .time")
+        views_el = node.select_one(".views, .box .views")
         # Fallback deterministic ID from slug if detail doesn't expose WP postid.
         fallback_id = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:12]
 
@@ -79,6 +91,7 @@ def scrape_listing(page_num: int = 1) -> Tuple[List[Dict[str, Any]], Optional[in
             },
             "metadata": {
                 "duration": clean_text(dur_el.get_text(" ", strip=True) if dur_el else ""),
+                "views": clean_text(views_el.get_text(" ", strip=True) if views_el else ""),
             },
             "taxonomy": {
                 "categories": ["viral-mms"],
@@ -127,29 +140,31 @@ def enrich_detail(card: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     servers: List[Dict[str, Any]] = []
     seen_streams = set()
 
-    raw_directs: List[str] = []
-    for node in soup.select("video source[src], video[src]"):
-        src = abs_url(BASE_URL, node.get("src"))
+    raw_directs: List[Tuple[str, str]] = []
+    for node in soup.select("video source[src], video source[data-src], video[src]"):
+        src = abs_url(BASE_URL, node.get("src") or node.get("data-src"))
         if src:
-            raw_directs.append(src)
+            q_hint = clean_text(node.get("label") or node.get("title") or node.get("data-res"))
+            raw_directs.append((src, q_hint))
     for m in re.finditer(r'https?://[^\s"\'<>\\]+\.(?:mp4|m3u8)(?:\?[^\s"\'<>\\]*)?', html, re.I):
         cand = m.group(0).strip()
         if "preview" not in cand.lower():
-            raw_directs.append(cand)
+            raw_directs.append((cand, ""))
 
-    for cand in raw_directs:
+    for cand, q_hint in raw_directs:
         if cand in seen_streams:
             continue
         alive, final_url = verify_stream_alive(cand, referer=detail_url, session=_SESSION)
         if alive and final_url and final_url not in seen_streams:
             seen_streams.add(final_url)
             mime_type = "application/x-mpegURL" if ".m3u8" in final_url.lower() else "direct_mp4"
+            qlabel = infer_quality_label(q_hint, final_url, default="HD")
             servers.append({
-                "name": "Desi49 Direct",
+                "name": f"Desi49 Direct ({qlabel})" if qlabel != "HD" else "Desi49 Direct",
                 "server": "Desi49 CDN",
                 "embed_url": final_url,
                 "type": mime_type,
-                "quality_label": "HD",
+                "quality_label": qlabel,
             })
 
     # Extract non-ad iframe embeds and verify liveness.
@@ -171,6 +186,7 @@ def enrich_detail(card: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     if not servers:
         return None, "dead"
 
+    servers = pick_best_servers(servers)
     primary = servers[0]
     og_img = soup.select_one("meta[property='og:image']")
     thumb = clean_text(og_img.get("content")) if og_img else ""

@@ -13,7 +13,9 @@ from .base import (
     abs_url,
     clean_text,
     fetch_html,
+    infer_quality_label,
     parse_soup,
+    pick_best_servers,
     verify_embed_alive,
     verify_stream_alive,
 )
@@ -93,26 +95,34 @@ class KvsViralMmsAdapter:
                 continue
 
             thumb = ""
+            preview_count = 0
             if img:
                 thumb = abs_url(
                     self.base_url,
                     img.get("data-original") or img.get("data-src") or img.get("src"),
                 )
+                cnt_raw = clean_text(img.get("data-cnt"))
+                if cnt_raw.isdigit():
+                    preview_count = int(cnt_raw)
 
-            dur_el = card.select_one(".duration, .thumb-duration, .item-duration")
+            dur_el = card.select_one(".duration, .thumb-duration, .item-duration, .time")
             views_el = card.select_one(".views, .item-views")
             rating_el = card.select_one(".rating, .item-rating")
+
+            media_obj: Dict[str, Any] = {
+                "main_thumbnail": thumb,
+                "thumbnail_url": thumb,
+                "clean_thumbnail": thumb,
+            }
+            if preview_count > 1:
+                media_obj["preview_count"] = preview_count
 
             items.append({
                 "source_site": self.source_site,
                 "post_id": post_id,
                 "title": title,
                 "url": detail_url,
-                "media": {
-                    "main_thumbnail": thumb,
-                    "thumbnail_url": thumb,
-                    "clean_thumbnail": thumb,
-                },
+                "media": media_obj,
                 "metadata": {
                     "duration": clean_text(dur_el.get_text(" ", strip=True) if dur_el else ""),
                     "views": clean_text(views_el.get_text(" ", strip=True) if views_el else ""),
@@ -184,7 +194,13 @@ class KvsViralMmsAdapter:
             if not alive or not final_url or final_url in seen_urls:
                 continue
             seen_urls.add(final_url)
-            qlabel = clean_text(fv.get(f"{key}_text")) or ("1080p HD" if fv.get("video_url_fhd") == "1" else "720p HD")
+            q_hint = clean_text(fv.get(f"{key}_text"))
+            if not q_hint:
+                if key == "video_url" and fv.get("video_url_fhd") == "1":
+                    q_hint = "1080p HD"
+                elif key == "video_url" and fv.get("video_url_hd") == "1":
+                    q_hint = "720p HD"
+            qlabel = infer_quality_label(q_hint, final_url, default="HD")
             servers.append({
                 "name": f"{self.label} ({qlabel})",
                 "server": self.label,
@@ -208,12 +224,22 @@ class KvsViralMmsAdapter:
         if not servers:
             return None, "dead"
 
+        servers = pick_best_servers(servers)
         primary = servers[0]
+        list_thumb = card.get("media", {}).get("main_thumbnail") or ""
         thumb = (
             abs_url(self.base_url, fv.get("preview_url"))
-            or card["media"].get("main_thumbnail")
+            or list_thumb
             or ""
         )
+        preview_frames: List[str] = []
+        preview_count = int(card.get("media", {}).get("preview_count") or 0)
+        if preview_count > 1 and list_thumb and re.search(r"/1\.(jpe?g|webp)(\?.*)?$", list_thumb, re.I):
+            preview_frames = [
+                re.sub(r"/1\.(jpe?g|webp)(\?.*)?$", rf"/{i}.\1\2", list_thumb, flags=re.I)
+                for i in range(1, min(preview_count, 9) + 1)
+            ]
+
         trailer = ""
         if post_id and post_id.isdigit():
             folder = (int(post_id) // 1000) * 1000
@@ -240,6 +266,7 @@ class KvsViralMmsAdapter:
             "full_video_url": primary["embed_url"],
             "video_mime_type": "video/mp4" if primary["type"] == "direct_mp4" else "embed/iframe",
             "trailer_preview_url": trailer or None,
+            "preview_frames": preview_frames or None,
             "main_thumbnail": thumb,
             "thumbnail_url": thumb,
             "clean_thumbnail": thumb,

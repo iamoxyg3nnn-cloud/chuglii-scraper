@@ -4,7 +4,7 @@ verification for Viral MMS site adapters.
 """
 import re
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -252,6 +252,47 @@ def verify_embed_alive(
         return True
     except Exception:
         return False
+
+
+def resolution_rank(label: str = "", url: str = "") -> int:
+    """Return numeric vertical resolution (e.g. 1080, 720, 480) for quality sorting."""
+    blob = f"{label or ''} {url or ''}".lower()
+    for pat, score in (
+        (r"(?:4320p?|8k)", 4320),
+        (r"(?:2160p?|4k|uhd)", 2160),
+        (r"(?:1440p?|2k|qhd)", 1440),
+        (r"(?:1080p?|fhd|full[\s_-]?hd)", 1080),
+        (r"(?:720p?|\bhd\b)", 720),
+        (r"(?:480p?|\bsd\b)", 480),
+        (r"(?:360p?)", 360),
+        (r"(?:240p?)", 240),
+    ):
+        if re.search(pat, blob):
+            return score
+    return 0
+
+
+def infer_quality_label(label: str = "", url: str = "", default: str = "HD") -> str:
+    """Normalize explicit resolution text/URL hints into a clean quality label."""
+    rank = resolution_rank(label, url)
+    if rank >= 2160:
+        return "4K"
+    if rank in (1440, 1080, 720, 480, 360, 240):
+        return f"{rank}p HD" if rank >= 720 else f"{rank}p"
+    cleaned = clean_text(label)
+    return cleaned or default
+
+
+def pick_best_servers(servers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort extracted streams so direct streams and highest resolution come first."""
+    return sorted(
+        servers,
+        key=lambda s: (
+            1 if s.get("type") != "embed" else 0,
+            resolution_rank(s.get("quality_label", ""), s.get("embed_url", "")),
+        ),
+        reverse=True,
+    )
 
 
 def parse_soup(html: str) -> BeautifulSoup:

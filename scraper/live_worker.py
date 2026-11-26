@@ -39,7 +39,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 UPSTREAM_BASE = "https://h4gaz3.jpzydpzm.cc"
 MIRROR_BASES = [UPSTREAM_BASE, "https://box.jpzydpzm.cc"]
-LIST_PATHS = [f"/sstp/live/{n}/" for n in range(1, 5)] + ["/category/sstp/"]
+LIST_PATHS = [f"/category/sstp/live/{n}/" for n in range(1, 5)] + ["/category/sstp/"]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 IMAGE_KEY = b"f5d965df75336270"
 IMAGE_IV = b"97b60394abc2fbe1"

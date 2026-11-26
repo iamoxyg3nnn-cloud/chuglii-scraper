@@ -13,3 +13,6 @@ cf_session.json
 scraper/.cache/
 .cache/http/
 .cache/cf/
+
+# Local analysis dumps (scraped HTML/JS, not source)
+scratch/

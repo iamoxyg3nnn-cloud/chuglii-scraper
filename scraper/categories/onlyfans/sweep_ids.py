@@ -23,8 +23,9 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
@@ -36,6 +37,7 @@ SITE = "borntobefuck"
 CHECKPOINT_KEY = "onlyfans_sweep_borntobefuck"
 BATCH_SIZE = 40
 MAX_ID_BUFFER = 2000
+DEFAULT_WORKERS = 6
 
 
 def _known_max_id(known_ids: Set[str]) -> int:
@@ -104,6 +106,25 @@ def _flush(records: List[Dict[str, Any]]) -> int:
     return len(polished)
 
 
+def _probe_one(vid_num: int) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """(known-id key, enriched record or None if the id is dead).
+
+    Runs in a worker thread: pure reads plus the Layer-1 gate, no shared state.
+    """
+    key = f"{SITE}:{vid_num}"
+    card = btb.scrape_metadata_from_watch(str(vid_num))
+    if not card:
+        return key, None
+    enriched = btb.enrich_detail(card)
+    if enriched.get("stream_dead"):
+        return key, None
+    duration = btb.hls_duration(
+        enriched.get("full_video_url") or "", referer=enriched.get("stream_referer")
+    )
+    if duration:
+        enriched["duration_seconds"] = duration
+    return key, enriched
+
 def sweep(
     *,
     minutes: float = 45.0,
@@ -111,6 +132,7 @@ def sweep(
     max_id: Optional[int] = None,
     limit: Optional[int] = None,
     dry_run: bool = False,
+    workers: int = DEFAULT_WORKERS,
 ) -> Dict[str, Any]:
     from scraper.categories.onlyfans.pipeline import load_known_ids, save_known_ids
 
@@ -121,94 +143,91 @@ def sweep(
 
     start_id = int(state["next_id"])
     stop_at = int(state["max_id"])
+    workers = max(1, int(workers))
+    window = workers * 3
+
     batch: List[Dict[str, Any]] = []
     new_dead: Set[str] = set()
     new_live: Set[str] = set()
     stored = 0
     probed = 0
-    last_processed = None      # last id handled end-to-end; cursor = it + 1
+    dead_total = 0
+    last_processed: Optional[int] = None
     interrupted = False
 
     print(
         f"[sweep] {SITE} ids {start_id}..{stop_at} | budget {minutes:.0f} min | "
-        f"limit {limit or 'none'} | dry_run={dry_run}"
+        f"workers {workers} | limit {limit or 'none'} | dry_run={dry_run}"
     )
 
-    for vid_num in range(start_id, stop_at + 1):
-        if time.time() >= deadline:
-            interrupted = True
-            break
-        if limit is not None and probed >= int(limit):
-            interrupted = True
-            break
+    def _flush_batch() -> None:
+        nonlocal batch, stored
+        flushed = len(batch) if dry_run else _flush(batch)
+        stored += flushed
+        state["ingested"] = state.get("ingested", 0) + flushed
+        batch = []
 
-        key = f"{SITE}:{vid_num}"
-        if key in known_ids:
-            last_processed = vid_num
-            continue
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        window_start = start_id
+        while window_start <= stop_at:
+            if time.time() >= deadline:
+                interrupted = True
+                break
+            if limit is not None and probed >= int(limit):
+                interrupted = True
+                break
 
-        card = btb.scrape_metadata_from_watch(str(vid_num))
-        probed += 1
-        if not card:
-            # No watch page = nothing to ingest. Remember it so the range does
-            # not cost a request on every future run.
-            new_dead.add(key)
-            last_processed = vid_num
-            continue
+            window_ids = list(range(window_start, min(window_start + window, stop_at + 1)))
+            if limit is not None:
+                window_ids = window_ids[: max(0, int(limit) - probed)]
+            if not window_ids:
+                interrupted = True
+                break
 
-        enriched = btb.enrich_detail(card)
-        if enriched.get("stream_dead"):
-            new_dead.add(key)
-            last_processed = vid_num
-            continue
+            todo = [i for i in window_ids if f"{SITE}:{i}" not in known_ids]
+            verdicts = {
+                int(key.split(":")[1]): (key, record)
+                for key, record in pool.map(_probe_one, todo)
+            }
+            probed += len(todo)
 
-        duration = btb.hls_duration(enriched.get("full_video_url") or "", referer=enriched.get("stream_referer"))
-        if duration:
-            enriched["duration_seconds"] = duration
+            for vid_num in window_ids:
+                found = verdicts.get(vid_num)
+                if found is not None:
+                    key, record = found
+                    if record is None:
+                        new_dead.add(key)
+                    else:
+                        new_live.add(key)
+                        batch.append(record)
+                        if len(batch) >= BATCH_SIZE:
+                            _flush_batch()
+                last_processed = vid_num
 
-        new_live.add(key)
-        batch.append(enriched)
-
-        last_processed = vid_num
-
-        if len(batch) >= BATCH_SIZE:
-            flushed = len(batch) if dry_run else _flush(batch)
-            stored += flushed
-            state["ingested"] = state.get("ingested", 0) + flushed
-            batch = []
-            state["next_id"] = (last_processed or start_id) + 1
-            state["probed"] = state.get("probed", 0) + probed
-            state["dead"] = state.get("dead", 0) + len(new_dead)
-            probed = 0
             known_ids |= new_dead | new_live
             if not dry_run:
                 if new_live:
                     save_known_ids(known_ids, new_live, status="stored")
                 if new_dead:
                     save_known_ids(known_ids, new_dead, status="dead")
+            # The cursor only covers ids fully handled in this window.
+            state["next_id"] = (last_processed if last_processed is not None else start_id) + 1
+            state["probed"] = state.get("probed", 0) + len(todo)
+            state["dead"] = state.get("dead", 0) + len(new_dead)
+            dead_total += len(new_dead)
+            if not dry_run:
+                save_state(state)
+            print(
+                f"  [sweep] {window_ids[0]}..{window_ids[-1]} | stored {stored} "
+                f"dead {len(new_dead)} | cursor {state['next_id']}"
+            )
             new_dead = set()
             new_live = set()
-            save_state(state)
-            print(f"  [sweep] at id {vid_num} | stored so far {stored}")
+            window_start = window_ids[-1] + 1
 
     if batch:
-        flushed = len(batch) if dry_run else _flush(batch)
-        stored += flushed
-        state["ingested"] = state.get("ingested", 0) + flushed
-    if not dry_run:
-        if new_live:
-            save_known_ids(known_ids | new_live, new_live, status="stored")
-        if new_dead:
-            save_known_ids(known_ids | new_dead, new_dead, status="dead")
+        _flush_batch()
 
-    # The cursor only moves past ids that were fully handled: if the budget runs
-    # out on the very first id, nothing was handled and it must not advance.
-    if last_processed is not None:
-        state["next_id"] = last_processed + 1
-    else:
-        state["next_id"] = start_id
-    state["probed"] = state.get("probed", 0) + probed
-    state["dead"] = state.get("dead", 0) + len(new_dead)
     state["runs"] = state.get("runs", 0) + 1
     if not dry_run:
         save_state(state)
@@ -219,14 +238,14 @@ def sweep(
         "max_id": stop_at,
         "probed": probed,
         "stored": stored,
-        "dead": len(new_dead),
+        "dead": dead_total,
         "interrupted": interrupted,
         "remaining": max(0, stop_at - state["next_id"] + 1),
         "cumulative": {k: state.get(k) for k in ("probed", "ingested", "dead", "runs")},
     }
     print(
-        f"[sweep] done: probed {probed} stored {stored} dead {len(new_dead)} | "
-        f"cursor {state['next_id']} | remaining {summary['remaining']}"
+        f"[sweep] done: probed {probed} stored {stored} dead {dead_total} | cursor {state['next_id']} | "
+        f"remaining {summary['remaining']}"
     )
     return summary
 
@@ -237,6 +256,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--min-id", type=int, default=None)
     parser.add_argument("--max-id", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None, help="max ids to probe")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     sweep(
@@ -245,6 +265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_id=args.max_id,
         limit=args.limit,
         dry_run=args.dry_run,
+        workers=args.workers,
     )
     return 0
 

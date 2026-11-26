@@ -170,7 +170,7 @@ jobs:
         # cursor is persisted in Supabase, so each run continues where the last
         # one stopped and a killed run still keeps its progress.
         if: ${{ !cancelled() }}
-        run: python -X utf8 scraper/categories/onlyfans/sweep_ids.py --minutes 25 || true
+        run: python -X utf8 scraper/categories/onlyfans/sweep_ids.py --minutes 60 --workers 6 || true
 
       - name: Revalidate Dead Streams (OnlyFans)
         # Layer 2 of the dead-video gate. Ingest (Layer 1) cannot know that a

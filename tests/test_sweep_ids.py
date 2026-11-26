@@ -57,7 +57,7 @@ def test_known_ids_cost_no_requests(monkeypatch):
     h = Harness(monkeypatch, known={f"borntobefuck:{i}" for i in (100, 101, 102, 103)})
     summary = sweep_ids.sweep(minutes=5, min_id=100, max_id=110)
 
-    assert h.asked == [str(i) for i in range(104, 111)]
+    assert sorted(int(v) for v in h.asked) == list(range(104, 111))
     assert summary["probed"] == 7
     assert summary["stored"] == 7
 

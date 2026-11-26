@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin
 
 from scraper import net as _net
+from scraper.categories.onlyfans.media_probe import probe_media
+from scraper.categories.onlyfans.polish import format_duration
 
 try:
     from scrapling import Fetcher  # type: ignore
@@ -328,6 +330,18 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
                 duration_seconds = int(dur_raw)
         except Exception:
             duration_seconds = 0
+    _direct_mp4s = [srv for srv in servers if srv.get("type") == "direct_mp4"]
+    _direct_mp4s.sort(key=lambda srv: int(srv.get("quality_score") or 0), reverse=True)
+    direct_mp4_candidate = _direct_mp4s[0]["embed_url"] if _direct_mp4s else None
+    if duration_seconds <= 0 and direct_mp4_candidate:
+        # No metadata anywhere and the embed page is script-rendered, so ask the
+        # media header. Leaving this at 0 let the insert default it to 600 s,
+        # i.e. every such video displayed "10:00".
+        probed, _h = probe_media(
+            direct_mp4_candidate, referer="https://sheeshfans.com/",
+        )
+        if probed:
+            duration_seconds = probed
 
     # Published date not reliably present; keep existing or og:video:release_date if present.
     published_at = card.get("published_at") or _extract_meta(resp, "og:video:release_date") or _extract_meta(resp, "article:published_time") or None
@@ -353,7 +367,8 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     merged["actors"] = models
     merged["published_at"] = published_at
     merged["duration_seconds"] = duration_seconds
-    merged["duration_formatted"] = f"{duration_seconds // 60}:{duration_seconds % 60:02d}" if duration_seconds > 0 else card.get("duration_formatted")
+    # format_duration keeps hours (6,684 s was rendered "111:24", not "1:51:24").
+    merged["duration_formatted"] = format_duration(duration_seconds)
     # Use stable poster image as preview; signed mp4 tokens expire quickly.
     merged["trailer_preview_url"] = preview_poster or preview_jpg or None
     merged["screenshots"] = screenshots

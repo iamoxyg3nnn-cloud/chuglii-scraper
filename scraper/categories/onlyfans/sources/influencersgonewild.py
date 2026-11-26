@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin, urlsplit
 
 from scraper import net as _net
+from scraper.categories.onlyfans.media_probe import probe_media
+from scraper.categories.onlyfans.polish import format_duration
 
 try:
     from scrapling import Fetcher  # type: ignore
@@ -325,9 +327,21 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     og_image = normalize_cdn_url(_extract_meta(resp, "og:image") or _extract_meta(resp, "twitter:image") or card.get("thumbnail_url"))
     description = _extract_meta(resp, "description") or _extract_meta(resp, "og:description")
 
+    # Duration: this site publishes none. There is no og:video:duration, no
+    # JSON-LD duration and no flashvars value (verified against live pages), so
+    # a value can only come from the media header itself. Without this the row
+    # fell through to the table default 600 s -- every influencersgonewild video
+    # on the site showed "10:00".
+    duration_seconds, _height = probe_media(
+        mp4_url or "", referer="https://influencersgonewild.com/",
+    )
+
     merged = dict(card)
     merged["servers"] = servers
     merged["full_video_url"] = mp4_url
+    if duration_seconds:
+        merged["duration_seconds"] = duration_seconds
+        merged["duration_formatted"] = format_duration(duration_seconds)
     merged["video_mime_type"] = "video/mp4" if mp4_url else "embed/iframe"
     merged["thumbnail_url"] = og_image or merged.get("thumbnail_url")
     merged["published_at"] = published_at

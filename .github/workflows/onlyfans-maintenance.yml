@@ -75,9 +75,15 @@ jobs:
 
       - name: Revalidate Dead Streams
         # Layer 2 of the dead-video gate: CDN objects disappear after ingest.
+        #
+        # 200/night was far too small a batch: sheeshfans alone has ~5,900 rows,
+        # so one full cycle took a month and 1,000 dead embeds (HTTP 410) stayed
+        # in the public feed the whole time. A probe is one ranged request, so a
+        # much larger batch still fits this window.
         run: |
           python -X utf8 scraper/categories/onlyfans/verify_dead.py \
-            --limit "${{ github.event.inputs.revalidate_limit || '200' }}"
+            --limit "${{ github.event.inputs.revalidate_limit || '1500' }}" \
+            --workers 12
 
       - name: Health Gate
         # Deliberately NOT suffixed with `|| true`: a source that silently stops

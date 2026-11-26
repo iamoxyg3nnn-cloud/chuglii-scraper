@@ -51,6 +51,8 @@ def log(msg: str) -> None:
 
 
 def http_get(url: str, timeout: int = 20, binary: bool = False):
+    """Fetch with browser TLS impersonation (curl_cffi) — the upstream blocks
+    plain datacenter requests. Falls back to plain requests."""
     last = None
     candidates = [url]
     try:
@@ -59,6 +61,16 @@ def http_get(url: str, timeout: int = 20, binary: bool = False):
     except Exception:
         pass
     for candidate in candidates:
+        # 1st choice: curl_cffi with Chrome impersonation (beats bot checks)
+        try:
+            from curl_cffi import requests as cffi
+            r = cffi.get(candidate, headers={"User-Agent": UA, "Referer": "https://www.google.com/"}, timeout=timeout, impersonate="chrome")
+            if r.status_code == 200:
+                return r.content if binary else r.text
+            last = f"upstream {r.status_code}"
+        except Exception as e:
+            last = str(e)
+        # fallback: plain requests
         try:
             r = requests.get(candidate, headers={"User-Agent": UA, "Referer": "https://www.google.com/"}, timeout=timeout)
             if r.status_code == 200:

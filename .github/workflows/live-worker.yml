@@ -37,6 +37,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt pycryptodome
 
+      - name: Install ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          fi
+          ffmpeg -version | head -1
+
       - name: Run live worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

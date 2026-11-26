@@ -14,9 +14,7 @@ def clean_onlyfans_title(raw_title: str) -> str:
     if not raw_title:
         return "OnlyFans Leaked Video"
     
-    t = raw_title.replace("Internet Chicks", "").replace("InternetChicks.com", "")
-    t = re.sub(r"\s*-\s*Internet Chicks.*$", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bVideo Leaked\b", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bVideo Leaked\b", "", raw_title, flags=re.IGNORECASE)
     t = re.sub(r"\bPhotos Leaked\b", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\bOnlyfans Leaked\b", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip()
@@ -169,9 +167,9 @@ def prioritize_servers(servers: List[Dict[str, Any]]) -> tuple[Optional[str], Li
 
 def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Polishes raw scraped InternetChicks OnlyFans item into a schema-compliant record.
+    Polishes raw scraped OnlyFans item into a schema-compliant record.
     Matches Chuglii scraper standard:
-      - source_site: 'internetchicks'
+      - source_site: 'influencersgonewild' | 'sheeshfans'
       - source_post_id: e.g. '65140'
       - categories: ['onlyfans']
       - video_mime_type: 'embed/iframe'
@@ -217,7 +215,7 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     date_str = raw_item.get("date") or raw_item.get("published_at")
     published_at = parse_date_to_iso(date_str)
 
-    source_site = raw_item.get("source_site") or "internetchicks"
+    source_site = raw_item.get("source_site") or "influencersgonewild"
 
     # Tags - dedupe, preserve useful model/content tags.
     raw_tags = raw_item.get("tags") or []
@@ -229,7 +227,7 @@ def polish_onlyfans_record(raw_item: Dict[str, Any]) -> Dict[str, Any]:
         clean_t = re.sub(r"\s+", " ", str(t or "").strip().lower())
         if not clean_t or len(clean_t) < 2 or len(clean_t) > 80:
             continue
-        if clean_t in {"internetchicks", "video", "videos", "photo", "photos"}:
+        if clean_t in {"video", "videos", "photo", "photos"}:
             continue
         if clean_t in seen_tags:
             continue

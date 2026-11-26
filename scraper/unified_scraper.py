@@ -499,13 +499,13 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
             "status": "running",
             "started_at": progress.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mode": "head_and_backfill",
-            "sites_requested": ["internetchicks", "influencersgonewild", "sheeshfans"],
+            "sites_requested": ["influencersgonewild", "sheeshfans"],
         })
         save_of_progress(progress)
 
         total_new = 0
         failed_sites: List[str] = []
-        sites = ["internetchicks", "influencersgonewild", "sheeshfans"]
+        sites = ["influencersgonewild", "sheeshfans"]
 
         for site_key in sites:
             if site_key not in OF_SOURCES:

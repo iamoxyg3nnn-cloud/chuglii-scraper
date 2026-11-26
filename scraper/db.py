@@ -225,7 +225,6 @@ def get_myanmar_videos(source_site: Optional[str] = None, tag: Optional[str] = N
 # ─── Isolated OnlyFans Database Functions ───────────────────────────────────
 
 ONLYFANS_SOURCE_TABLE_RPC = {
-    "internetchicks": "scraper_insert_onlyfans_internetchicks_videos",
     "influencersgonewild": "scraper_insert_onlyfans_influencersgonewild_videos",
     "sheeshfans": "scraper_insert_onlyfans_sheeshfans_videos",
 }
@@ -324,7 +323,7 @@ def sync_onlyfans_source_tables_batch(polished_records: List[Dict[str, Any]], re
                 synced += int(res.get("inserted") or res.get("count") or len(chunk)) if isinstance(res, dict) else len(chunk)
     return {"success": not errors, "synced": synced, "errors": errors, "deduped_input": len(polished_records)}
 
-def get_onlyfans_videos(source_site: Optional[str] = "internetchicks", tag: Optional[str] = None, category: Optional[str] = "onlyfans", search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
+def get_onlyfans_videos(source_site: Optional[str] = "influencersgonewild", tag: Optional[str] = None, category: Optional[str] = "onlyfans", search: Optional[str] = None, sort: str = "newest", limit: int = 24, offset: int = 0) -> List[Dict[str, Any]]:
     """
     Retrieves stored videos strictly from scraper.onlyfans_videos table using RPC bridge.
     """

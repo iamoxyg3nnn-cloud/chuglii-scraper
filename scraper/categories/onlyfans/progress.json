@@ -20,25 +20,6 @@
       "started_at": "2026-11-25T10:39:09.266527+00:00",
       "finished_at": "2026-11-25T10:39:14.494233+00:00"
     },
-    "internetchicks": {
-      "site": "internetchicks",
-      "mode": "resume",
-      "status": "completed",
-      "start_page": 402,
-      "end_page": 402,
-      "current_page": 402,
-      "pages_crawled": 1,
-      "items_found": 32,
-      "items_new": 32,
-      "items_merged": 0,
-      "skipped_known": 0,
-      "skipped_unresolved": 0,
-      "upserted": 32,
-      "errors": 0,
-      "last_error": null,
-      "started_at": "2026-11-25T10:38:52.317033+00:00",
-      "finished_at": "2026-11-25T10:39:01.012649+00:00"
-    },
     "influencersgonewild": {
       "site": "influencersgonewild",
       "mode": "resume",
@@ -62,7 +43,6 @@
   "started_at": "2026-11-23T18:25:28.119231+00:00",
   "mode": "head_and_backfill",
   "sites_requested": [
-    "internetchicks",
     "influencersgonewild",
     "sheeshfans"
   ],

@@ -10,7 +10,7 @@ DECLARE
     site_key text;
     table_key text;
 BEGIN
-    FOREACH site_key IN ARRAY ARRAY['internetchicks', 'influencersgonewild', 'sheeshfans'] LOOP
+    FOREACH site_key IN ARRAY ARRAY['influencersgonewild', 'sheeshfans'] LOOP
         table_key := site_key || '_videos';
         EXECUTE format($ddl$
             CREATE TABLE IF NOT EXISTS scraper.%I (
@@ -71,7 +71,7 @@ DECLARE
     table_key text;
     inserted_count integer;
 BEGIN
-    IF p_site NOT IN ('internetchicks', 'influencersgonewild', 'sheeshfans') THEN
+    IF p_site NOT IN ('influencersgonewild', 'sheeshfans') THEN
         RAISE EXCEPTION 'Unknown OnlyFans source: %', p_site;
     END IF;
     table_key := p_site || '_videos';
@@ -123,7 +123,7 @@ AS $$
 DECLARE
     table_key text;
 BEGIN
-    IF p_site NOT IN ('internetchicks', 'influencersgonewild', 'sheeshfans') THEN
+    IF p_site NOT IN ('influencersgonewild', 'sheeshfans') THEN
         RAISE EXCEPTION 'Unknown OnlyFans source: %', p_site;
     END IF;
     table_key := p_site || '_videos';
@@ -157,7 +157,7 @@ DECLARE
     table_key text;
     result_count bigint;
 BEGIN
-    IF p_site NOT IN ('internetchicks', 'influencersgonewild', 'sheeshfans') THEN
+    IF p_site NOT IN ('influencersgonewild', 'sheeshfans') THEN
         RAISE EXCEPTION 'Unknown OnlyFans source: %', p_site;
     END IF;
     table_key := p_site || '_videos';
@@ -183,7 +183,7 @@ AS $$
 DECLARE
     table_key text;
 BEGIN
-    IF p_site NOT IN ('internetchicks', 'influencersgonewild', 'sheeshfans') THEN
+    IF p_site NOT IN ('influencersgonewild', 'sheeshfans') THEN
         RAISE EXCEPTION 'Unknown OnlyFans source: %', p_site;
     END IF;
     table_key := p_site || '_videos';
@@ -203,7 +203,7 @@ DO $$
 DECLARE
     site_key text;
 BEGIN
-    FOREACH site_key IN ARRAY ARRAY['internetchicks', 'influencersgonewild', 'sheeshfans'] LOOP
+    FOREACH site_key IN ARRAY ARRAY['influencersgonewild', 'sheeshfans'] LOOP
         EXECUTE format($insert_wrapper$
             CREATE OR REPLACE FUNCTION public.scraper_insert_onlyfans_%1$s_videos(items jsonb)
             RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path = scraper, public

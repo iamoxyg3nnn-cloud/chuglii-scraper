@@ -1,9 +1,8 @@
 """
 Unified Multi-Site OnlyFans Scraper & Cross-Site Deduplication Pipeline
 Targets:
-  1. Internet Chicks (https://internetchicks.com)
-  2. Influencers Gone Wild (https://influencersgonewild.com)
-  3. SheeshFans (https://sheeshfans.com)
+  1. Influencers Gone Wild (https://influencersgonewild.com)
+  2. SheeshFans (https://sheeshfans.com)
 
 Features:
  - Multi-tier cross-site deduplication (Locker hash, Semantic token fingerprint, Jaccard overlap)
@@ -52,9 +51,8 @@ PROGRESS_FILE = CURRENT_DIR / "progress.json"
 # Checkpoint & Cache Persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
-ONLYFANS_SITES = ("internetchicks", "influencersgonewild", "sheeshfans")
+ONLYFANS_SITES = ("influencersgonewild", "sheeshfans")
 DEFAULT_CHECKPOINTS: Dict[str, Any] = {
-    "internetchicks": {"current_page": 1, "max_pages": 513},
     "influencersgonewild": {"current_page": 1, "max_pages": 200},
     "sheeshfans": {"current_page": 1, "max_pages": 200},
     "total_ingested": 0,
@@ -525,7 +523,7 @@ def run_unified_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-Site OnlyFans Scraper & Deduplication Pipeline")
-    parser.add_argument("--site", choices=["all", "internetchicks", "influencersgonewild", "sheeshfans"], default="all",
+    parser.add_argument("--site", choices=["all", "influencersgonewild", "sheeshfans"], default="all",
                         help="Target site to crawl (default: all)")
     parser.add_argument("--pages", type=int, default=2, help="Number of pages per site (default: 2)")
     parser.add_argument("--full-site", action="store_true", help="Crawl from page 1 to detected max pages for each selected site")
@@ -537,7 +535,7 @@ def main():
 
     args = parser.parse_args()
 
-    target_sites = ["internetchicks", "influencersgonewild", "sheeshfans"] if args.site == "all" else [args.site]
+    target_sites = ["influencersgonewild", "sheeshfans"] if args.site == "all" else [args.site]
 
     if args.daemon:
         print("[*] Starting continuous 24/7 cross-site watcher daemon...")

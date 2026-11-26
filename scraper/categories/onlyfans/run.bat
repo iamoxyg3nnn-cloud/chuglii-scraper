@@ -6,9 +6,8 @@ color 0d
 echo ============================================================================
 echo   CHUGLII - MULTI-SITE ONLYFANS SCRAPER & DEDUPLICATION RUNNER
 echo   Targets:
-echo     1. InternetChicks      (https://internetchicks.com)
-echo     2. InfluencersGoneWild  (https://influencersgonewild.com)
-echo     3. SheeshFans          (https://sheeshfans.com)
+echo     1. InfluencersGoneWild  (https://influencersgonewild.com)
+echo     2. SheeshFans          (https://sheeshfans.com)
 echo   Engine: Scrapling Stealth + Per-Site Isolation Pipeline
 echo   Storage: scraper.onlyfans_videos / scraper.videos
 echo ============================================================================
@@ -26,27 +25,24 @@ echo [*] Using Python executable: %PYTHON_BIN%
 echo.
 
 echo Options:
-echo  1. Scrape ALL 3 sites (1 page each)
-echo  2. Scrape ALL 3 sites (5 pages each)
-echo  3. Scrape InternetChicks only (5 pages)
-echo  4. Scrape InfluencersGoneWild only (5 pages)
-echo  5. Scrape SheeshFans only (5 pages)
-echo  6. Dry-run test across all 3 sites with JSON export (1 page each)
-echo  7. Run 24/7 continuous watcher daemon across all 3 sites
+echo  1. Scrape ALL 2 sites (1 page each)
+echo  2. Scrape ALL 2 sites (5 pages each)
+echo  3. Scrape InfluencersGoneWild only (5 pages)
+echo  4. Scrape SheeshFans only (5 pages)
+echo  5. Dry-run test across all 2 sites with JSON export (1 page each)
+echo  6. Run 24/7 continuous watcher daemon across all 2 sites
 echo.
-set /p opt="Select an option [1-7] (default 1): "
+set /p opt="Select an option [1-6] (default 1): "
 
 if "%opt%"=="2" (
     %PYTHON_BIN% pipeline.py --site all --pages 5
 ) else if "%opt%"=="3" (
-    %PYTHON_BIN% pipeline.py --site internetchicks --pages 5
-) else if "%opt%"=="4" (
     %PYTHON_BIN% pipeline.py --site influencersgonewild --pages 5
-) else if "%opt%"=="5" (
+) else if "%opt%"=="4" (
     %PYTHON_BIN% pipeline.py --site sheeshfans --pages 5
-) else if "%opt%"=="6" (
+) else if "%opt%"=="5" (
     %PYTHON_BIN% pipeline.py --site all --pages 1 --dry-run --save-json
-) else if "%opt%"=="7" (
+) else if "%opt%"=="6" (
     %PYTHON_BIN% pipeline.py --daemon
 ) else (
     %PYTHON_BIN% pipeline.py --site all --pages 1

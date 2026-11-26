@@ -54,15 +54,15 @@ def test_save_checkpoint_reports_remote_failure(tmp_path, monkeypatch):
 
 def test_load_known_ids_prefixes_per_site_ledger_ids(tmp_path, monkeypatch):
     local = tmp_path / "known_post_ids.json"
-    local.write_text(json.dumps(["internetchicks:local-id"]), encoding="utf-8")
+    local.write_text(json.dumps(["influencersgonewild:local-id"]), encoding="utf-8")
     monkeypatch.setattr(
         progress, "get_scraper_known_post_ids", lambda site, limit: {"remote-id"}
     )
 
-    ids = progress.load_known_ids("internetchicks", local, prefix=True)
+    ids = progress.load_known_ids("influencersgonewild", local, prefix=True)
 
-    assert "internetchicks:local-id" in ids
-    assert "internetchicks:remote-id" in ids
+    assert "influencersgonewild:local-id" in ids
+    assert "influencersgonewild:remote-id" in ids
 
 
 def test_mark_known_ids_groups_by_site_and_honours_rpc_failure(monkeypatch):
@@ -75,14 +75,14 @@ def test_mark_known_ids_groups_by_site_and_honours_rpc_failure(monkeypatch):
     monkeypatch.setattr(progress, "add_scraper_known_post_ids", fake_add)
 
     written = progress.mark_known_ids(
-        {"internetchicks:abc", "sheeshfans:xyz", "bare-id"},
+        {"influencersgonewild:abc", "sheeshfans:xyz", "bare-id"},
         default_site="myanmar",
         status="seen",
     )
 
     assert written == 3
     assert {site: (ids, status) for site, ids, status in calls} == {
-        "internetchicks": (("abc",), "seen"),
+        "influencersgonewild": (("abc",), "seen"),
         "myanmar": (("bare-id",), "seen"),
         "sheeshfans": (("xyz",), "seen"),
     }
@@ -92,13 +92,13 @@ def test_mark_known_ids_groups_by_site_and_honours_rpc_failure(monkeypatch):
         "add_scraper_known_post_ids",
         lambda site, ids, status="stored": {"success": False, "error": "write denied"},
     )
-    assert progress.mark_known_ids({"internetchicks:retry-me"}) == 0
+    assert progress.mark_known_ids({"influencersgonewild:retry-me"}) == 0
 
 
 def test_finalize_status_keeps_failed_sites_isolated():
     state = {
         "sites": {
-            "internetchicks": {"status": "completed"},
+            "influencersgonewild": {"status": "completed"},
             "sheeshfans": {"status": "failed"},
             "voyeurhouse": {"status": "completed"},
         }
@@ -108,7 +108,7 @@ def test_finalize_status_keeps_failed_sites_isolated():
 
     assert status == "failed"
     assert state["failed_sites"] == ["myanmar", "sheeshfans"]
-    assert state["sites"]["internetchicks"]["status"] == "completed"
+    assert state["sites"]["influencersgonewild"]["status"] == "completed"
 
 
 @pytest.mark.parametrize("value", [{}, "", 0, ["ok"]])

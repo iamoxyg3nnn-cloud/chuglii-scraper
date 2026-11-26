@@ -1145,7 +1145,7 @@ GRANT EXECUTE ON FUNCTION public.scraper_get_myanmar_related_videos(uuid, int) T
 CREATE TABLE IF NOT EXISTS scraper.onlyfans_videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     canonical_fingerprint TEXT,                    -- SHA256 semantic fingerprint for cross-site deduplication
-    source_site TEXT NOT NULL,                     -- e.g. 'internetchicks', 'influencersgonewild', 'sheeshfans'
+    source_site TEXT NOT NULL,                     -- e.g. 'influencersgonewild', 'sheeshfans'
     source_post_id TEXT NOT NULL,                  -- Original post ID on target site (e.g. '65140')
     title TEXT NOT NULL,
     slug TEXT,
@@ -2913,7 +2913,6 @@ BEGIN
         WHEN 'jav'                    THEN 'japanese_videos'
         WHEN 'myanmar'                THEN 'myanmar_videos'
         WHEN 'buumal'                 THEN 'myanmar_videos'
-        WHEN 'internetchicks'         THEN 'onlyfans_videos'
         WHEN 'influencersgonewild'    THEN 'onlyfans_videos'
         WHEN 'sheeshfans'             THEN 'onlyfans_videos'
         WHEN 'voyeurhouseorg'         THEN 'voyeurhouse_videos'
@@ -2925,7 +2924,7 @@ BEGIN
     END;
 
     IF v_table IS NOT NULL AND to_regclass('scraper.' || v_table) IS NOT NULL THEN
-        IF v_site IN ('internetchicks', 'influencersgonewild', 'sheeshfans') THEN
+        IF v_site IN ('influencersgonewild', 'sheeshfans') THEN
             v_filter := format('AND source_site = %L', v_site);
         END IF;
         EXECUTE format(

@@ -64,7 +64,7 @@ clean_image_url = clean_thumbnail_url
 
 
 def parse_date_to_iso(date_str: Optional[str]) -> Optional[str]:
-    """Parses IGW/IC/SheeshFans dates into ISO 8601 UTC string."""
+    """Parses InfluencersGoneWild and SheeshFans dates into ISO 8601 UTC string."""
     if not date_str:
         return None
     raw = str(date_str).strip()

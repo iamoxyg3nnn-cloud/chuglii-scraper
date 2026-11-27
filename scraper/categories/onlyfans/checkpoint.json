@@ -8,14 +8,14 @@
     "current_page": 414
   },
   "borntobefuck": {
-    "current_page": 1,
-    "max_pages": 80
+    "max_pages": 80,
+    "current_page": 9
   },
   "uncutx": {
-    "current_page": 1,
-    "max_pages": 10
+    "max_pages": 10,
+    "current_page": 3
   },
   "total_ingested": 0,
   "total_merged": 0,
-  "timestamp": "2026-11-26 05:57:06"
+  "timestamp": "2026-11-27 02:00:01"
 }

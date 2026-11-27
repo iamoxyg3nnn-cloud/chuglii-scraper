@@ -2,15 +2,15 @@
   "status": "completed",
   "site": "samusar",
   "started_at": "2026-11-26T08:27:17.642375+00:00",
-  "updated_at": "2026-11-26T08:27:40.846429+00:00",
-  "current_page": 2,
+  "updated_at": "2026-11-27T01:59:50.629938+00:00",
+  "current_page": 9,
   "pages_crawled": 1,
   "items_found": 24,
-  "upserted": 23,
-  "skipped_dead": 1,
+  "upserted": 24,
+  "skipped_dead": 0,
   "skipped_unresolved": 0,
   "errors": 0,
   "last_error": null,
-  "finished_at": "2026-11-26T08:27:40.846376+00:00",
-  "total_ingested": 23
+  "finished_at": "2026-11-27T01:59:50.629897+00:00",
+  "total_ingested": 192
 }

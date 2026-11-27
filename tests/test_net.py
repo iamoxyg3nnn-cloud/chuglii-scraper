@@ -22,12 +22,14 @@ def isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(net, "_HTTP_DIR", tmp_path / "http")
     monkeypatch.setattr(net, "_CF_DIR", tmp_path / "cf")
     monkeypatch.setattr(net, "HOST_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(net, "PROXY_FALLBACK", False)   # no proxy harvesting in tests
     net._HOST_LAST.clear()
     net._CF_SESSIONS.clear()
     net._CF_SESSIONS_LOADED.clear()
     net._CF_SOLVES.clear()
     net._CF_LAST_SOLVE.clear()
     net._CF_COOLDOWN_UNTIL.clear()
+    net._BLOCKED_HOSTS.clear()
     yield
 
 
@@ -45,8 +47,8 @@ def install_plain(monkeypatch, responses):
     """Stub the plain fetcher; returns the call log."""
     calls = []
 
-    def fake_plain(url, timeout, headers, referer):
-        calls.append(url)
+    def fake_plain(url, timeout, headers, referer, proxy=None):
+        calls.append((url, proxy))
         item = responses[min(len(calls) - 1, len(responses) - 1)]
         if item is None:
             return None
@@ -147,6 +149,63 @@ def test_transport_failure_returns_none(monkeypatch):
     assert net.fetch("https://down.test/", retries=2) is None
 
 
+def test_is_block_status_shapes():
+    for status in (403, 406, 429, 451, 466, 511):
+        assert net.is_block_status(status) is True
+    for status in (200, 301, 404, 410, 500):
+        assert net.is_block_status(status) is False
+
+
+def test_waf_status_escalates_to_proxy(monkeypatch):
+    """madouhd.cc answers 466 to runner IPs; the proxy result must be used."""
+    calls = install_plain(monkeypatch, [FakeResp(466, b"blocked")])
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+    monkeypatch.setattr(net, "_solve_cloudflare", lambda url, host: None)
+
+    def fake_proxy_get(url, timeout, headers, referer, host):
+        return net.Page(url=url, status=200, body=b"<html>catalogue</html>", via="proxy")
+
+    monkeypatch.setattr(net, "_proxy_get", fake_proxy_get)
+    page = net.fetch("https://madouhd.cc/category/cate3/", retries=1)
+    assert page.status == 200 and page.via == "proxy"
+    assert b"catalogue" in page.body
+    assert len(calls) == 1
+
+
+def test_waf_status_without_proxy_is_never_content(monkeypatch):
+    install_plain(monkeypatch, [FakeResp(466, b"<html>still blocked</html>")])
+    monkeypatch.setattr(net, "_solve_cloudflare", lambda url, host: None)
+    page = net.fetch("https://madouhd.cc/category/cate3/", retries=1)
+    assert page is not None
+    assert page.status == 466
+    assert page.challenge is True
+    assert page.body == b"", "a WAF body must not reach a parser as content"
+    assert net.cache_stats()["entries"] == 0
+
+
+def test_blocked_host_goes_proxy_first_next_time(monkeypatch):
+    """A host that blocked us must not burn direct attempts on every URL."""
+    calls = install_plain(monkeypatch, [FakeResp(466), FakeResp(200, b"<html>ok</html>")])
+    monkeypatch.setattr(net, "_solve_cloudflare", lambda url, host: None)
+    net._BLOCKED_HOSTS["madouhd.cc"] = net.time.time()
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+
+    def fake_proxy_get(url, timeout, headers, referer, host):
+        return net.Page(url=url, status=200, body=b"<html>via proxy</html>", via="proxy")
+
+    monkeypatch.setattr(net, "_proxy_get", fake_proxy_get)
+    page = net.fetch("https://madouhd.cc/category/cate4/", retries=2)
+    assert page.status == 200 and page.via == "proxy"
+    assert calls == [], "direct attempts were made against a known-blocking host"
+
+
+def test_success_clears_blocked_host_memory(monkeypatch):
+    install_plain(monkeypatch, [FakeResp(200, b"<html>ok</html>")])
+    net._BLOCKED_HOSTS["was.blocked"] = net.time.time()
+    net.fetch("https://was.blocked/a/", retries=1)
+    assert "was.blocked" not in net._BLOCKED_HOSTS
+
+
 def test_is_cf_challenge_shapes():
     assert net.is_cf_challenge(403, b"") is True
     assert net.is_cf_challenge(503, b"") is True
@@ -212,3 +271,27 @@ def test_challenge_fallback_can_be_disabled(monkeypatch):
 def test_cf_cooldown_blocks_further_solves(monkeypatch):
     net._CF_COOLDOWN_UNTIL["cf.test"] = net.time.time() + 60
     assert net._solve_cloudflare("https://cf.test/", "cf.test") is None
+
+
+def test_page_css_matches_scrapling_selector_surface(monkeypatch):
+    """The OnlyFans sources call resp.css(...) on a net.Page — that crashed with
+    "'Page' object has no attribute 'css'" and disabled two sites completely."""
+    html = (
+        b'<html><body>'
+        b'<article class="post"><h2 class="entry-title"><a href="/a/1"> First  post </a></h2>'
+        b'<img data-src="t.jpg"></article>'
+        b'<a class="page-numbers" href="/page/3/">3</a>'
+        b'</body></html>'
+    )
+    install_plain(monkeypatch, [FakeResp(200, html)])
+    page = net.fetch("https://igw.test/category/onlyfans/", retries=1)
+
+    arts = page.css("article.post")
+    assert len(arts) == 1
+    assert arts[0].attrib.get("class") == "post"
+    link = arts[0].css(".entry-title a")[0]
+    assert link.attrib["href"] == "/a/1"
+    assert link.text.clean() == "First post"
+    assert arts[0].css("img")[0].attrib["data-src"] == "t.jpg"
+    assert page.css("a.page-numbers")[0].attrib["href"] == "/page/3/"
+    assert page.css("nothing-here") == []

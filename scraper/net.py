@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 __all__ = [
@@ -47,6 +47,9 @@ __all__ = [
     "cf_host_status",
     "clear_cache",
     "cache_stats",
+    "is_block_status",
+    "blocked_hosts",
+    "forget_blocked_host",
 ]
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -65,6 +68,26 @@ MAX_CACHE_BODY = int(float(os.environ.get("SCRAPER_CACHE_MAX_BODY_MB", "1")) * 1
 CF_SESSION_REUSE_SECONDS = 45.0
 CF_RATE_LIMIT_COOLDOWN = 60.0
 CF_MAX_SOLVES_PER_HOST = int(os.environ.get("SCRAPER_CF_MAX_SOLVES", "6"))
+
+# Proxy escalation. Origins routinely reject datacenter egress (GitHub Actions
+# runners) with a non-standard status instead of a Cloudflare challenge —
+# madouhd.cc answers 466 to every URL for a runner IP while a normal IP gets
+# 200. Before this, ``fetch`` returned those answers untouched, so a whole
+# category scraped zero rows forever. A blocked answer is now routed through a
+# validated proxy (and through Scrapling's stealth browser for Cloudflare).
+PROXY_FALLBACK = os.environ.get("SCRAPER_PROXY_FALLBACK", "1") not in ("0", "false", "False", "")
+PROXY_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_TIMEOUT", "45"))
+
+# Statuses a WAF/origin uses to reject the *client*, not to describe the URL.
+# 404/410 stay out of this set: those mean "gone" and are cached as dead.
+BLOCK_STATUSES = frozenset({401, 402, 403, 406, 407, 409, 418, 429, 451, 466, 468, 469, 511})
+
+# Once a host has proved it blocks our direct egress, go proxy-first for a
+# while instead of burning three doomed attempts per URL (madouhd has 40+
+# zones and two passes each — 250+ wasted requests per session otherwise).
+BLOCKED_HOST_TTL = float(os.environ.get("SCRAPER_BLOCKED_HOST_TTL", "1800"))
+_BLOCKED_HOSTS: Dict[str, float] = {}
+_BLOCKED_LOCK = threading.Lock()
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -102,6 +125,12 @@ class Page:
     """Minimal response object that satisfies every existing source.
 
     Sources read ``.status`` and ``.html_content`` (or ``.text``); both work.
+    A few sources (the OnlyFans aggregators) were written against Scrapling's
+    selector API and call ``.css(selector)`` on the response, which this class
+    did not provide: every one of their fetches died with
+    ``'Page' object has no attribute 'css'``. ``css()`` here is a thin lxml
+    wrapper returning nodes with the same ``attrib`` / ``text`` (``.clean()``)
+    / nested ``css()`` surface.
     """
 
     url: str
@@ -110,8 +139,25 @@ class Page:
     encoding: str = "utf-8"
     headers: Dict[str, str] = field(default_factory=dict)
     from_cache: bool = False
-    via: str = "fetcher"      # fetcher | stealthy | cache | dead-cache
+    via: str = "fetcher"      # fetcher | stealthy | proxy | cache | dead-cache
     challenge: bool = False
+    _root: Any = field(default=None, init=False, repr=False, compare=False)
+
+    def _dom(self) -> Any:
+        if self._root is None:
+            from lxml import html as _html
+
+            self._root = _html.fromstring(self.html_content)
+        return self._root
+
+    def css(self, selector: str) -> List[Any]:
+        """Scrapling-compatible CSS selection over this page's HTML."""
+        if not selector:
+            return []
+        try:
+            return [_Node(el) for el in self._dom().cssselect(selector)]
+        except Exception:
+            return []
 
     @property
     def html_content(self) -> str:
@@ -134,6 +180,41 @@ class Page:
 
 
 # ─── Cloudflare detection ────────────────────────────────────────────────────
+
+class _Text(str):
+    """str that also answers Scrapling's ``.clean()`` (whitespace collapse)."""
+
+    def clean(self) -> str:
+        return " ".join(self.split())
+
+
+class _Node:
+    """Minimal selector node returned by :meth:`Page.css`."""
+
+    __slots__ = ("_el",)
+
+    def __init__(self, el: Any) -> None:
+        self._el = el
+
+    @property
+    def attrib(self) -> Dict[str, str]:
+        return dict(self._el.attrib or {})
+
+    @property
+    def text(self) -> _Text:
+        return _Text(" ".join(part.strip() for part in self._el.itertext() if part.strip()))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._el.get(key, default)
+
+    def css(self, selector: str) -> List["_Node"]:
+        try:
+            return [_Node(el) for el in self._el.cssselect(selector)]
+        except Exception:
+            return []
+
+    def __repr__(self) -> str:
+        return f"<_Node {self._el.tag} {dict(self._el.attrib or {})}>"
 
 def is_cf_challenge(status: int, body: bytes = b"", headers: Optional[Dict[str, str]] = None) -> bool:
     """True when a response is a Cloudflare interstitial rather than content.
@@ -321,6 +402,43 @@ def _throttle(host: str, min_interval: Optional[float] = None) -> None:
     time.sleep(wait + random.uniform(0.0, 0.25))
 
 
+# ─── Block detection & per-host egress memory ───────────────────────────────
+
+def is_block_status(status: int) -> bool:
+    """True for statuses that describe *us* being rejected, not the URL."""
+    return int(status or 0) in BLOCK_STATUSES
+
+
+def _mark_host_blocked(host: str) -> None:
+    with _BLOCKED_LOCK:
+        if host not in _BLOCKED_HOSTS:
+            print(
+                f"    [!] {host} rejects this runner's egress; routing its requests "
+                f"through a proxy for the next {int(BLOCKED_HOST_TTL / 60)} min."
+            )
+        _BLOCKED_HOSTS[host] = time.time()
+
+
+def _host_is_blocked(host: str) -> bool:
+    ts = _BLOCKED_HOSTS.get(host)
+    if not ts:
+        return False
+    if time.time() - ts > BLOCKED_HOST_TTL:
+        _BLOCKED_HOSTS.pop(host, None)
+        return False
+    return True
+
+
+def blocked_hosts() -> Dict[str, float]:
+    """Diagnostics: host -> age in seconds of the last egress block."""
+    now = time.time()
+    return {h: round(now - ts, 1) for h, ts in list(_BLOCKED_HOSTS.items())}
+
+
+def forget_blocked_host(host: str) -> None:
+    _BLOCKED_HOSTS.pop(host, None)
+
+
 # ─── Cloudflare cookie/UA cache ──────────────────────────────────────────────
 
 def _cf_path(host: str) -> Path:
@@ -394,6 +512,21 @@ def _solve_cloudflare(url: str, host: str, timeout_ms: int = 45000) -> Optional[
     Serialized behind ``_CF_LOCK`` with a per-host cooldown and solve budget so
     parallel workers cannot stampede browsers or get the origin to 429 us.
     """
+    return _stealth_fetch(url, host, proxy=None, solve_cloudflare=True, timeout_ms=timeout_ms)
+
+
+def _stealth_fetch(
+    url: str,
+    host: str,
+    proxy: Optional[str] = None,
+    solve_cloudflare: bool = True,
+    timeout_ms: int = 45000,
+) -> Optional[Page]:
+    """Fetch ``url`` with Scrapling's StealthyFetcher, optionally via a proxy.
+
+    A direct call solves the Cloudflare challenge; a proxied call is the last
+    resort for origins that hard-block datacenter IPs (madouhd 466).
+    """
     now = time.time()
     if now < _CF_COOLDOWN_UNTIL.get(host, 0.0):
         return None
@@ -414,21 +547,24 @@ def _solve_cloudflare(url: str, host: str, timeout_ms: int = 45000) -> Optional[
         try:
             from scrapling.fetchers import StealthyFetcher
         except Exception as exc:
-            print(f"    [!] Cloudflare challenge on {host} but Scrapling is unavailable: {exc}")
+            print(f"    [!] Challenge on {host} but Scrapling is unavailable: {exc}")
             return None
 
-        print(f"    [*] Cloudflare challenge on {host}; solving via Scrapling StealthyFetcher...")
+        where = f" via proxy {proxy.split('@')[-1]}" if proxy else ""
+        print(f"    [*] Blocked on {host}{where}; solving via Scrapling StealthyFetcher...")
         _CF_SOLVES[host] = _CF_SOLVES.get(host, 0) + 1
+        kwargs: Dict[str, Any] = {
+            "solve_cloudflare": bool(solve_cloudflare),
+            "headless": True,
+            "network_idle": True,
+            "timeout": timeout_ms,
+        }
+        if proxy:
+            kwargs["proxy"] = proxy
         try:
-            resp = StealthyFetcher.fetch(
-                url,
-                solve_cloudflare=True,
-                headless=True,
-                network_idle=True,
-                timeout=timeout_ms,
-            )
+            resp = StealthyFetcher.fetch(url, **kwargs)
         except Exception as exc:
-            print(f"    [!] Scrapling solve failed for {host}: {exc}")
+            print(f"    [!] Scrapling fetch failed for {host}: {exc}")
             return None
 
         status = getattr(resp, "status", 0) or 0
@@ -440,7 +576,7 @@ def _solve_cloudflare(url: str, host: str, timeout_ms: int = 45000) -> Optional[
         body = bytes(getattr(resp, "body", b"") or b"")
         headers = dict(getattr(resp, "headers", {}) or {})
         if status != 200 or is_cf_challenge(status, body, headers):
-            print(f"    [!] Cloudflare still blocking {host} after solve (HTTP {status}).")
+            print(f"    [!] Still blocked on {host} after stealth fetch (HTTP {status}).")
             return None
 
         cookies: Dict[str, str] = {}
@@ -476,6 +612,7 @@ def _plain_get(
     timeout: float,
     headers: Optional[Dict[str, str]],
     referer: Optional[str],
+    proxy: Optional[str] = None,
 ) -> Optional[Page]:
     """One curl_cffi-backed request carrying any cached Cloudflare cookies."""
     try:
@@ -498,6 +635,8 @@ def _plain_get(
     }
     if session.get("cookies"):
         kwargs["cookies"] = session["cookies"]
+    if proxy:
+        kwargs["proxy"] = proxy
     try:
         resp = Fetcher.get(url, **kwargs)
     except Exception:
@@ -516,6 +655,93 @@ def _plain_get(
     )
     page.challenge = is_cf_challenge(status, body, resp_headers)
     return page
+
+
+def _proxy_get(
+    url: str,
+    timeout: float,
+    headers: Optional[Dict[str, str]],
+    referer: Optional[str],
+    host: str,
+) -> Optional[Page]:
+    """One attempt through a validated proxy for a host that blocks our egress."""
+    if not PROXY_FALLBACK:
+        return None
+    try:
+        from scraper.proxy_pool import GLOBAL_PROXY_POOL
+    except Exception:
+        return None
+    try:
+        proxy = GLOBAL_PROXY_POOL.get_proxy(target_url=url)
+    except Exception as exc:
+        print(f"    [!] Proxy pool unavailable for {host}: {exc}")
+        return None
+    if not proxy:
+        print(f"    [!] No working proxy available for {host}.")
+        return None
+
+    page = _plain_get(url, max(timeout, PROXY_TIMEOUT), headers, referer, proxy=proxy)
+    if page is not None and page.status == 200 and not page.challenge:
+        page.via = "proxy"
+        return page
+    status = page.status if page is not None else "no response"
+    print(f"    [-] Proxy {proxy.split('@')[-1]} failed for {host} ({status}); evicting.")
+    try:
+        GLOBAL_PROXY_POOL.report_failure(proxy)
+    except Exception:
+        pass
+    return None
+
+
+def _escalate(
+    url: str,
+    host: str,
+    page: Optional[Page],
+    timeout: float,
+    headers: Optional[Dict[str, str]],
+    referer: Optional[str],
+    allow_cache: bool,
+) -> Optional[Page]:
+    """Last resort for a blocked answer: stealth browser, then proxy, then both.
+
+    This is the path that rescues an origin blocking the runner's datacenter IP
+    (madouhd 466) or serving a challenge the plain TLS fingerprint cannot pass
+    (fangsung). Every step is best-effort and failures fall through.
+    """
+    # 1. Stealth browser directly (Scrapling is the Cloudflare solver).
+    solved = _solve_cloudflare(url, host)
+    if solved is not None:
+        if allow_cache:
+            _cache_put(url, solved, solved.body)
+        print(f"    [✓] {host} unblocked with Scrapling stealth browser.")
+        return solved
+
+    # 2. Plain request through a validated proxy.
+    proxied = _proxy_get(url, timeout, headers, referer, host)
+    if proxied is not None:
+        if allow_cache:
+            _cache_put(url, proxied, proxied.body)
+        print(f"    [✓] {host} unblocked via proxy.")
+        return proxied
+
+    # 3. Stealth browser through a proxy (hard IP + challenge together).
+    if PROXY_FALLBACK:
+        try:
+            from scraper.proxy_pool import GLOBAL_PROXY_POOL
+
+            proxy = GLOBAL_PROXY_POOL.get_proxy(target_url=url)
+        except Exception:
+            proxy = None
+        if proxy:
+            stealthed = _stealth_fetch(url, host, proxy=proxy)
+            if stealthed is not None:
+                if allow_cache:
+                    _cache_put(url, stealthed, stealthed.body)
+                print(f"    [✓] {host} unblocked via proxy + stealth browser.")
+                return stealthed
+
+    _mark_host_blocked(host)
+    return None
 
 
 def fetch(
@@ -537,11 +763,14 @@ def fetch(
     Returns a :class:`Page` for any HTTP answer that reached the origin
     (including 404/410, which callers may interpret as "end of listing"), or
     ``None`` when no answer could be obtained at all (network error,
-    unresolvable Cloudflare block, or exhausted retries).
+    unresolvable block, or exhausted retries).
 
-    A Cloudflare challenge is *never* returned as content: it comes back as
-    ``Page(challenge=True)`` with a non-200 status, so parsers cannot mistake
-    an interstitial for an empty listing.
+    A block is *never* returned as content. Cloudflare interstitials, WAF
+    statuses (403/429/451/466/...) and a host already known to reject this
+    runner's egress are escalated: Scrapling stealth browser first, then a
+    validated proxy, then both together. Only when every route fails does the
+    answer come back as a non-200, empty ``Page`` so no parser mistakes it for
+    an empty listing.
     """
     if not url:
         return None
@@ -557,6 +786,15 @@ def fetch(
     attempts = max(1, int(retries))
     last_page: Optional[Page] = None
 
+    # A host that already proved it blocks our egress: don't waste three
+    # doomed direct attempts per URL, go through the proxy first.
+    if accept_challenge_fallback and _host_is_blocked(host):
+        proxied = _proxy_get(url, timeout, headers, referer, host)
+        if proxied is not None:
+            if allow_cache:
+                _cache_put(url, proxied, proxied.body)
+            return proxied
+
     for attempt in range(attempts):
         _throttle(host, min_interval)
         page = _plain_get(url, timeout, headers, referer)
@@ -566,6 +804,13 @@ def fetch(
             if attempt < attempts - 1:
                 time.sleep(min(1.5 * (attempt + 1), 6.0))
                 continue
+            # No answer at all: the origin may be dropping our egress entirely.
+            if accept_challenge_fallback:
+                proxied = _proxy_get(url, timeout, headers, referer, host)
+                if proxied is not None:
+                    if allow_cache:
+                        _cache_put(url, proxied, proxied.body)
+                    return proxied
             return None
 
         # Dead URL: remember it so the next caller pays zero requests.
@@ -582,6 +827,10 @@ def fetch(
             if attempt < attempts - 1:
                 time.sleep(min(1.5 * (attempt + 1), 6.0))
                 continue
+            if accept_challenge_fallback:
+                escalated = _escalate(url, host, page, timeout, headers, referer, allow_cache)
+                if escalated is not None:
+                    return escalated
             # Unresolved challenge: strip the interstitial body and force a
             # non-200 status so no parser can mistake it for an empty listing.
             return Page(
@@ -595,6 +844,8 @@ def fetch(
             )
 
         if page.status == 200:
+            if _host_is_blocked(host):
+                forget_blocked_host(host)
             if allow_cache:
                 _cache_put(url, page, page.body)
             return page
@@ -602,6 +853,21 @@ def fetch(
         if page.status in (429, 500, 502, 504) and attempt < attempts - 1:
             time.sleep(min(2.0 * (attempt + 1), max_backoff))
             continue
+
+        # Any other WAF rejection (466/451/406/...): not content, not gone.
+        if accept_challenge_fallback and is_block_status(page.status):
+            escalated = _escalate(url, host, page, timeout, headers, referer, allow_cache)
+            if escalated is not None:
+                return escalated
+            return Page(
+                url=url,
+                status=page.status,
+                body=b"",
+                encoding=page.encoding,
+                headers=page.headers,
+                challenge=True,
+                via=page.via,
+            )
 
         return page
 

@@ -9,9 +9,9 @@ on:
         required: false
         default: 'manual'
       session_minutes:
-        description: 'Daemon session duration in minutes (max ~320 for GitHub Actions)'
+        description: 'Daemon session duration in minutes. Must stay well under the 5.5h hard cancel (node-watchman) so the post-session backfills and the checkpoint commit always run.'
         required: false
-        default: '300'
+        default: '240'
       interval_seconds:
         description: 'Interval between scan cycles in seconds (default: 60 = 1m)'
         required: false
@@ -70,7 +70,11 @@ jobs:
     needs: guard
     if: needs.guard.outputs.enabled == 'true' && needs.guard.outputs.duplicate != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 355 # 5h55m (under GitHub's 360m hard limit)
+    # 0.5h of headroom under the 5.5h (330 min) cancel that node-watchman
+    # enforces on this repo. A 355-minute timeout was unreachable: the run was
+    # already being killed mid-daemon, so the translation backfills and the
+    # self-chain dispatch below never executed.
+    timeout-minutes: 325 # 5h25m
 
     permissions:
       contents: write # Required to push checkpoint progress back to repository
@@ -81,6 +85,13 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://supabase.chuglii.in' }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      # Origins that reject GitHub's datacenter IPs (madouhd.cc answers 466,
+      # fangsung serves a challenge) are retried through a validated proxy and
+      # Scrapling's stealth browser. Set to 0 to disable the proxy tier.
+      SCRAPER_PROXY_FALLBACK: "1"
+      # Optional operator-supplied proxy (residential/datacenter): used first
+      # for every blocked host before the public pool is harvested.
+      SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
 
     steps:
       - name: Checkout repository
@@ -121,7 +132,7 @@ jobs:
       - name: Run Unified Human-Adaptive Scraper Daemon
         id: scraper-daemon
         env:
-          SESSION_MINS: ${{ github.event.inputs.session_minutes || '300' }}
+          SESSION_MINS: ${{ github.event.inputs.session_minutes || '240' }}
           INTERVAL_SECS: ${{ github.event.inputs.interval_seconds || '60' }}
         run: |
           echo "=========================================================="
@@ -200,7 +211,13 @@ jobs:
             scraper/categories/chinese/progress.json \
             scraper/categories/fangsung/checkpoint.json \
             scraper/categories/fangsung/known_post_ids.json \
-            scraper/categories/fangsung/progress.json; do
+            scraper/categories/fangsung/progress.json \
+            scraper/categories/fangsung/translation_cache.json \
+            scraper/categories/studios/checkpoint.json \
+            scraper/categories/studios/known_post_ids.json \
+            scraper/categories/studios/progress.json \
+            scraper/categories/studios/translation_cache.json \
+            scraper/categories/chinese/translation_cache.json; do
             [ -f "$f" ] && git add "$f" || true
           done
           if ! git diff --staged --quiet; then
@@ -230,7 +247,7 @@ jobs:
           gh workflow run scrapers-auto-sync.yml \
             --ref "${{ github.ref_name }}" \
             -f triggered_by="self-chain" \
-            -f session_minutes="${{ github.event.inputs.session_minutes || '300' }}" \
+            -f session_minutes="${{ github.event.inputs.session_minutes || '240' }}" \
             -f interval_seconds="${{ github.event.inputs.interval_seconds || '60' }}" || true
 
           echo "[✓] Successor workflow dispatched. 24/7 handoff complete."

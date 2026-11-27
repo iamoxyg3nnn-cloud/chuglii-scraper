@@ -245,11 +245,31 @@ def run_deep_backfill(
             mx = int(state.get("max_pages", 50) or 50)
             if cur <= mx:
                 pending.append(key)
-        pages_left = sum(
-            max(0, int(checkpoints[k].get("max_pages", 50) or 50) - int(checkpoints[k].get("current_page", 1) or 1) + 1)
-            for k in pending
-        )
+
+        # CHEAPEST FIRST. The old order was the alphabetical checkpoint key, so
+        # every pass started at 19920497 (the 5,743-page magnet zone) and the
+        # session deadline always hit before the loop reached another zone:
+        # 'zones pending: 37' never shrank, and 12,000+ pages of smaller zones
+        # were never touched. Sorting by remaining pages retires the small
+        # archives first, so the pending list shrinks every session and the
+        # giant zone is ground last instead of starving everything behind it.
+        def _remaining(key: str) -> int:
+            st = checkpoints[key]
+            return max(
+                0,
+                int(st.get("max_pages", 50) or 50)
+                - int(st.get("current_page", 1) or 1)
+                + 1,
+            )
+
+        pending.sort(key=_remaining)
+        for key in pending:
+            checkpoints[key]["remaining_pages"] = _remaining(key)
+        pages_left = sum(_remaining(k) for k in pending)
         print(f"[DEEP] [{cfg['label']}] zones pending: {len(pending)} | pages remaining: {pages_left}")
+        if pending:
+            preview = ", ".join(f"{k}={_remaining(k)}" for k in pending[:5])
+            print(f"[DEEP] [{cfg['label']}] pass order (fewest pages first): {preview}")
 
         crawled_pages = 0
         stalls: Dict[str, int] = {}

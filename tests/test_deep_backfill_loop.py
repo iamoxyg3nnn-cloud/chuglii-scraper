@@ -200,3 +200,61 @@ def test_clear_flag_does_not_require_targets(monkeypatch):
     assert deep_backfill.set_flag(active=False) is True
     assert captured["p_state"]["active"] is False
     assert captured["p_state"]["targets"] == []
+
+
+def test_smallest_zone_is_ground_first(fake_target):
+    """Zone fairness: the old alphabetical order always started with the giant
+    magnet zone, so 'zones pending' never shrank and the small archives were
+    never crawled. Pass order must be fewest-pages-first."""
+
+    class TwoZonePipeline(FakePipeline):
+        def run_category_crawl(self, **kwargs):
+            self.calls.append(kwargs)
+            # Advance one page per call for whichever zone was asked for.
+            key = f"{kwargs['site_key']}:{kwargs['category_id']}"
+            self.checkpoints[key]["current_page"] += 1
+            return {"pages_crawled": 1, "detected_max_pages": 0}
+
+    mod = TwoZonePipeline([])
+    mod.checkpoints = {
+        "big:1": {"current_page": 1, "max_pages": 5000},
+        "small:9": {"current_page": 1, "max_pages": 3},
+    }
+    # Deadline lets only the first zone run.
+    import types
+
+    def fake_load(_t):
+        return (
+            {
+                "pipeline": "x",
+                "site_key": "big",
+                "label": "Two",
+                "zones": [("big", "1"), ("small", "9")],
+            },
+            mod,
+        )
+
+    import scraper.deep_backfill as db
+
+    db.TARGETS["two"] = {
+        "pipeline": "x",
+        "site_key": "big",
+        "label": "Two",
+        "zones": [("big", "1"), ("small", "9")],
+    }
+    try:
+        db._load_target = fake_load
+        db.run_deep_backfill(
+            targets=["two"],
+            deadline=time.time() + 3,
+            min_chunk_seconds=0.1,
+            chunk_pages=1,
+        )
+    finally:
+        db._load_target = deep_backfill._load_target
+
+    assert mod.calls, "nothing was crawled"
+    first = mod.calls[0]
+    assert (first["site_key"], first["category_id"]) == ("small", "9"), (
+        "the 3-page zone must be crawled before the 5,000-page zone"
+    )

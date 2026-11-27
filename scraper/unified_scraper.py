@@ -1086,6 +1086,16 @@ def run_unified_sync_cycle(
     feed_counts: Dict[str, int] = {}
 
     def run_feed(key: str, fn, **kwargs) -> int:
+        # Handoff guard: a session that is killed mid-feed loses the checkpoint
+        # commit and the successor dispatch (the fleet used to be cancelled at
+        # the 5.5h mark while this cycle was still running feeds). Past the
+        # deadline we never start another feed; the cursor state is already
+        # persisted per page, so the next session resumes cleanly.
+        if supabase_deadline is not None and time.time() >= supabase_deadline - 120:
+            FEED_STATUS.setdefault(key, "skipped")
+            feed_counts[key] = 0
+            log(f"  [HANDOFF] Deadline reached; skipping feed [{key}] so the session ends cleanly.")
+            return 0
         try:
             count = int(fn(**kwargs) or 0)
             feed_counts[key] = count
@@ -1117,7 +1127,9 @@ def run_unified_sync_cycle(
     st_count = run_feed("studios", run_studios_sync, check_head=check_head, pages_per_category=st_pages)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
-    partial_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "partial")
+    # A feed skipped at the session deadline is degraded, not healthy: it must
+    # show up in the summary instead of silently reading as a clean cycle.
+    partial_feeds = sorted(k for k, status in FEED_STATUS.items() if status in ("partial", "skipped"))
     global_status = "failed" if failed_feeds else "partial" if partial_feeds else "completed"
     try:
         from scraper.progress import save_progress as _save_global_progress

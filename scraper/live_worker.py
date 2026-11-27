@@ -165,49 +165,77 @@ def translate_missing() -> None:
 
 # ─── Quality probe ───────────────────────────────────────────────────────────
 
-def probe_quality(vid: str) -> str | None:
-    """Download ONE segment, decrypt, ffprobe the real resolution."""
+def probe_quality_and_frame(vid: str) -> tuple[str | None, bytes | None]:
+    """Download the segment at the CURRENT BROADCAST POSITION, ffprobe the
+    resolution, and extract a JPEG frame — one fetch, two artifacts."""
+    tmp = None
     try:
         html = http_get(f"{UPSTREAM_BASE}/video/{vid}/")
         m = re.search(r"data-config='([^']+)'", html)
         if not m:
-            return None
+            return None, None
         m3u8 = (json.loads(m.group(1)).get("video") or {}).get("url") or ""
         if not m3u8.startswith("http"):
-            return None
+            return None, None
         playlist = http_get(m3u8)
         lines = playlist.split("\n")
         base = m3u8.rsplit("/", 1)[0]
         segs = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
-        if not segs:
-            return None
+        durs = [float(x.group(1)) for x in (re.match(r"#EXTINF:([\d.]+)", l) for l in lines) if x]
+        if not segs or not durs:
+            return None, None
         keyline = next((l for l in lines if l.startswith("#EXT-X-KEY")), None)
         if not keyline:
-            return None
+            return None, None
         key_uri = re.search(r'URI="([^"]+)"', keyline).group(1)
         key_url = key_uri if key_uri.startswith("http") else f"{base}/{key_uri}"
         iv_hex = re.search(r"IV=0[xX]([0-9a-fA-F]+)", keyline)
         key = http_get(key_url, binary=True)
         media_seq = int(re.search(r"MEDIA-SEQUENCE=(\d+)", playlist).group(1)) if "MEDIA-SEQUENCE=" in playlist else 0
-        seg_url = segs[0] if segs[0].startswith("http") else f"{base}/{segs[0]}"
+
+        # broadcast position: same formula the player uses (join 10s behind)
+        duration = sum(durs)
+        pos = max(0.0, (time.time() % duration) - 10)
+        # find the segment covering pos
+        acc = 0.0
+        idx = 0
+        for i, d in enumerate(durs):
+            if acc + d > pos:
+                idx = i
+                break
+            acc += d
+            idx = i
+        seg_url = segs[idx] if segs[idx].startswith("http") else f"{base}/{segs[idx]}"
         enc = http_get(seg_url, timeout=30, binary=True)
-        iv = bytes.fromhex(iv_hex.group(1)) if iv_hex else (media_seq).to_bytes(16, "big")
+        iv = bytes.fromhex(iv_hex.group(1)) if iv_hex else (media_seq + idx).to_bytes(16, "big")
         dec = AES.new(key, AES.MODE_CBC, iv).decrypt(enc)
         with tempfile.NamedTemporaryFile(suffix=".ts", delete=False) as f:
             f.write(dec)
             tmp = f.name
+        height = None
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=height", "-of", "json", tmp],
+            capture_output=True, text=True,
+        )
         try:
-            r = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=height", "-of", "json", tmp],
-                capture_output=True, text=True,
-            )
             height = json.loads(r.stdout or "{}").get("streams", [{}])[0].get("height")
-            return f"{height}p" if height else None
-        finally:
-            Path(tmp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        frame = None
+        fr = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", tmp, "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+            capture_output=True,
+        )
+        if fr.returncode == 0 and len(fr.stdout) > 3000:
+            frame = fr.stdout
+        label = f"{height}p" if height else None
+        return label, frame
     except Exception as e:
         log(f"  probe {vid}: {e}")
-        return None
+        return None, None
+    finally:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
 
 
 def probe_missing_qualities(limit: int) -> None:
@@ -219,12 +247,46 @@ def probe_missing_qualities(limit: int) -> None:
     rows = r.json() or []
     done = 0
     for row in rows:
-        label = probe_quality(str(row["id"]))
+        label, frame = probe_quality_and_frame(str(row["id"]))
+        patch = {}
         if label:
-            s.patch(f"{base}/rest/v1/live_streams", json={"quality_label": label}, params={"id": f"eq.{row['id']}"})
+            patch["quality_label"] = label
+        if frame:
+            import base64
+            patch["frame_jpeg"] = base64.b64encode(frame).decode()
+            patch["has_frame"] = True
+            patch["frame_captured_at"] = datetime.now(timezone.utc).isoformat()
+        if patch:
+            s.patch(f"{base}/rest/v1/live_streams", json=patch, params={"id": f"eq.{row['id']}"})
             done += 1
     if rows:
-        log(f"quality probes: {done}/{len(rows)} succeeded")
+        log(f"quality+frame probes: {done}/{len(rows)} succeeded")
+
+
+def refresh_frames(limit: int) -> None:
+    """Re-capture frames for videos that already have one, oldest first —
+    so thumbnails keep rotating with the broadcast."""
+    base, s = sb()
+    r = s.get(
+        f"{base}/rest/v1/live_streams",
+        params={"select": "id", "has_frame": "eq.true", "active": "eq.true", "order": "frame_captured_at.asc", "limit": str(limit)},
+    )
+    rows = r.json() or []
+    done = 0
+    for row in rows:
+        label, frame = probe_quality_and_frame(str(row["id"]))
+        if frame:
+            import base64
+            patch = {
+                "frame_jpeg": base64.b64encode(frame).decode(),
+                "frame_captured_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if label:
+                patch["quality_label"] = label
+            s.patch(f"{base}/rest/v1/live_streams", json=patch, params={"id": f"eq.{row['id']}"})
+            done += 1
+    if rows:
+        log(f"frame refresh: {done}/{len(rows)} updated")
 
 
 # ─── Main loop ───────────────────────────────────────────────────────────────
@@ -244,6 +306,7 @@ def main() -> None:
                 sync_catalogue(streams)
                 translate_missing()
                 probe_missing_qualities(QUALITY_PROBE_PER_CYCLE)
+                refresh_frames(QUALITY_PROBE_PER_CYCLE)
         except Exception as e:
             log(f"cycle failed: {e}")
         if args.once:

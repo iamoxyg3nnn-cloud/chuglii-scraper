@@ -76,7 +76,7 @@ CF_MAX_SOLVES_PER_HOST = int(os.environ.get("SCRAPER_CF_MAX_SOLVES", "6"))
 # category scraped zero rows forever. A blocked answer is now routed through a
 # validated proxy (and through Scrapling's stealth browser for Cloudflare).
 PROXY_FALLBACK = os.environ.get("SCRAPER_PROXY_FALLBACK", "1") not in ("0", "false", "False", "")
-PROXY_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_TIMEOUT", "45"))
+PROXY_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_TIMEOUT", "20"))
 
 # Statuses a WAF/origin uses to reject the *client*, not to describe the URL.
 # 404/410 stay out of this set: those mean "gone" and are cached as dead.
@@ -652,6 +652,7 @@ def _plain_get(
         kwargs["cookies"] = session["cookies"]
     if proxy:
         kwargs["proxy"] = proxy
+        kwargs["retries"] = 1          # rotate fast instead of curl-retrying a dead proxy
     try:
         resp = Fetcher.get(url, **kwargs)
     except Exception:
@@ -672,6 +673,16 @@ def _plain_get(
     return page
 
 
+def _proxy_pool():
+    """The self-managing proxy fleet (lazy import: it pulls in curl_cffi)."""
+    try:
+        from scraper.proxy_pool import GLOBAL_PROXY_POOL
+
+        return GLOBAL_PROXY_POOL
+    except Exception:
+        return None
+
+
 def _proxy_get(
     url: str,
     timeout: float,
@@ -679,32 +690,49 @@ def _proxy_get(
     referer: Optional[str],
     host: str,
 ) -> Optional[Page]:
-    """One attempt through a validated proxy for a host that blocks our egress."""
+    """One request through the rotating proxy fleet for a blocked host.
+
+    Two different proxies are tried: free proxies die constantly, and a single
+    dead one must not cost the caller an entire zone. Success/failure is fed
+    back into the pool so the next request starts from a better place.
+    """
     if not PROXY_FALLBACK:
         return None
-    try:
-        from scraper.proxy_pool import GLOBAL_PROXY_POOL
-    except Exception:
-        return None
-    try:
-        proxy = GLOBAL_PROXY_POOL.get_proxy(target_url=url)
-    except Exception as exc:
-        print(f"    [!] Proxy pool unavailable for {host}: {exc}")
-        return None
-    if not proxy:
-        print(f"    [!] No working proxy available for {host}.")
+    pool = _proxy_pool()
+    if pool is None:
         return None
 
-    page = _plain_get(url, max(timeout, PROXY_TIMEOUT), headers, referer, proxy=proxy)
-    if page is not None and page.status == 200 and not page.challenge:
-        page.via = "proxy"
-        return page
-    status = page.status if page is not None else "no response"
-    print(f"    [-] Proxy {proxy.split('@')[-1]} failed for {host} ({status}); evicting.")
-    try:
-        GLOBAL_PROXY_POOL.report_failure(proxy)
-    except Exception:
-        pass
+    for attempt in range(2):
+        try:
+            proxy = pool.get_proxy(target_url=url, rotate=attempt > 0)
+        except Exception as exc:
+            print(f"    [!] Proxy pool unavailable for {host}: {exc}")
+            return None
+        if not proxy:
+            if attempt == 0:
+                print(f"    [!] No working proxy available for {host}.")
+            return None
+
+        started = time.time()
+        page = _plain_get(url, max(timeout, PROXY_TIMEOUT), headers, referer, proxy=proxy)
+        if page is not None and page.status == 200 and not page.challenge:
+            page.via = "proxy"
+            try:
+                pool.report_success(proxy, url, int((time.time() - started) * 1000))
+            except Exception:
+                pass
+            if _host_is_blocked(host):
+                # Proxy traffic works for this host: keep it proxy-first instead
+                # of re-failing directly every time the block flag expires.
+                _BLOCKED_HOSTS[host] = time.time()
+            return page
+
+        status = page.status if page is not None else "no response"
+        print(f"    [-] Proxy {proxy.split('@')[-1]} failed for {host} ({status}); rotating.")
+        try:
+            pool.report_failure(proxy, url)
+        except Exception:
+            pass
     return None
 
 
@@ -745,19 +773,28 @@ def _escalate(
 
     # 3. Stealth browser through a proxy (hard IP + challenge together).
     if PROXY_FALLBACK and not _is_media_url(url):
-        try:
-            from scraper.proxy_pool import GLOBAL_PROXY_POOL
-
-            proxy = GLOBAL_PROXY_POOL.get_proxy(target_url=url)
-        except Exception:
-            proxy = None
+        pool = _proxy_pool()
+        proxy = None
+        if pool is not None:
+            try:
+                proxy = pool.get_proxy(target_url=url, rotate=True)
+            except Exception:
+                proxy = None
         if proxy:
             stealthed = _stealth_fetch(url, host, proxy=proxy)
             if stealthed is not None:
+                try:
+                    pool.report_success(proxy, url)
+                except Exception:
+                    pass
                 if allow_cache:
                     _cache_put(url, stealthed, stealthed.body)
                 print(f"    [✓] {host} unblocked via proxy + stealth browser.")
                 return stealthed
+            try:
+                pool.report_failure(proxy, url)
+            except Exception:
+                pass
 
     _mark_host_blocked(host)
     return None

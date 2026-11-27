@@ -1264,6 +1264,24 @@ def run_continuous_daemon(
         f"{'ON' if DEEP_AUTOARM else 'OFF'} at >={DEEP_AUTOARM_MIN_PAGES} pages backlog"
     )
 
+    # Proxy fleet: harvest + validate free proxies in the background from the first
+    # second of the session, so origins that reject a runner IP (madouhd 466,
+    # fangsung challenge) already have a route before they are reached. Nothing
+    # to configure: an operator-supplied SCRAPER_PROXY_URL just takes precedence.
+    try:
+        from scraper.proxy_pool import ensure_started as _ensure_proxies
+        from scraper.proxy_pool import status as _proxy_status
+
+        _started = _ensure_proxies()
+        _pst = _proxy_status()
+        log(
+            f"  Proxy fleet:         ON (pool={_pst['pool']}, min={_pst['min_pool']}, harvesting in background)"
+            if _started and _pst["enabled"]
+            else "  Proxy fleet:         OFF (SCRAPER_PROXY_FALLBACK=0)"
+        )
+    except Exception as exc:
+        log(f"  [!] Proxy fleet unavailable: {exc}")
+
     # Self-arming: resume the archive grind when a real backlog exists, so the
     # operator no longer has to remember `deep_backfill.py set ...`.
     if DEEP_AUTOARM:
@@ -1355,6 +1373,22 @@ def run_continuous_daemon(
             log(f"[!] Deep backfill error: {e}")
 
         log(f"\n>>> CYCLE #{cycle} | Session elapsed: {elapsed / 60:.1f}m | Remaining: {remaining / 60:.1f}m <<<")
+        try:
+            from scraper.proxy_pool import status as _proxy_status
+            from scraper.net import blocked_hosts as _blocked_hosts
+
+            _st = _proxy_status()
+            log(
+                f"    [proxy] pool={_st['pool']}/{_st['min_pool']} | "
+                f"coverage={_st['coverage'] or '-'} | probed={_st['stats'].get('probed', 0)} "
+                f"evicted={_st['stats'].get('evicted', 0)}"
+            )
+            _b = _blocked_hosts()
+            if _b:
+                log("    [proxy] egress-blocked hosts: " + ", ".join(f"{h}({int(a)}s)" for h, a in _b.items()))
+        except Exception:
+            pass
+
         try:
             run_unified_sync_cycle(
                 check_head=check_head,

@@ -255,6 +255,24 @@ def sweep(
     return summary
 
 
+def _start_proxy_fleet() -> None:
+    """Warm the auto-harvested proxy fleet (no-op when it is disabled).
+
+    The maintenance jobs hit the same origins as the fleet and some of them
+    reject a runner IP, so the pool is started here as well instead of waiting
+    for the first block.
+    """
+    try:
+        from scraper.proxy_pool import ensure_started, status
+
+        ensure_started()
+        st = status()
+        if st["enabled"]:
+            print(f"[proxy] fleet ON (pool={st['pool']}/{st['min_pool']}, harvesting in background)")
+    except Exception as exc:                                  # never fatal
+        print(f"[proxy] fleet unavailable: {exc}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Sweep the borntobefuck id space")
     parser.add_argument("--minutes", type=float, default=45.0, help="wall-clock budget")
@@ -264,6 +282,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    _start_proxy_fleet()
     sweep(
         minutes=args.minutes,
         min_id=args.min_id,

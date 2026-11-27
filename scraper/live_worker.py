@@ -253,7 +253,9 @@ def probe_missing_qualities(limit: int) -> None:
             patch["quality_label"] = label
         if frame:
             import base64
-            patch["frame_jpeg"] = base64.b64encode(frame).decode()
+            # PostgREST bytea input expects a Postgres hex literal ("\x...").
+            # Sending raw base64 stores the ASCII text itself (bug fixed here).
+            patch["frame_jpeg"] = "\\x" + frame.hex()
             patch["has_frame"] = True
             patch["frame_captured_at"] = datetime.now(timezone.utc).isoformat()
         if patch:
@@ -279,8 +281,8 @@ def refresh_frames(limit: int) -> None:
         if frame:
             import base64
             patch = {
-                "frame_jpeg": base64.b64encode(frame).decode(),
-                "has_frame": True,
+                # PostgREST bytea input expects a Postgres hex literal
+                "frame_jpeg": "\\x" + frame.hex(),
                 "frame_captured_at": datetime.now(timezone.utc).isoformat(),
             }
             if label:
@@ -302,7 +304,8 @@ def refresh_frames(limit: int) -> None:
         if frame:
             import base64
             patch = {
-                "frame_jpeg": base64.b64encode(frame).decode(),
+                # PostgREST bytea input expects a Postgres hex literal
+                "frame_jpeg": "\\x" + frame.hex(),
                 "frame_captured_at": datetime.now(timezone.utc).isoformat(),
             }
             if label:

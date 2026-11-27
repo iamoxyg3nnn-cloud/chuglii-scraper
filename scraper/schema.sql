@@ -3546,3 +3546,55 @@ BEGIN
     RETURN updated_count;
 END $$;
 GRANT EXECUTE ON FUNCTION public.scraper_update_chinese_quality(jsonb) TO service_role;
+
+-- ─── PER-SITE TITLE_EN UPDATE RPCs (fixed 2026-11-27) ─────────────────────
+-- These were originally written as `SET title_en = x.title_en` over
+-- `jsonb_array_elements(items) AS x`, which raises
+--   ERROR 42703: column x.title_en does not exist
+-- so English-title backfills for fangsung / madouer / dasj91 / madouhd all
+-- failed. See scraper/migrations/20261127_title_en_rpc_fix.sql.
+DO $$
+DECLARE
+    t record;
+BEGIN
+    FOR t IN
+        SELECT * FROM (VALUES
+            ('fangsung', 'scraper.fangsung_videos'),
+            ('madouer',  'scraper.madouer_videos'),
+            ('dasj91',   'scraper.dasj91_videos'),
+            ('madouhd',  'scraper.madouhd_videos')
+        ) AS v(site, tbl)
+    LOOP
+        EXECUTE format($f$
+            CREATE OR REPLACE FUNCTION public.scraper_update_%1$s_title_en(items jsonb)
+            RETURNS jsonb
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path = scraper, public
+            AS $body$
+            DECLARE
+                updated_count int := 0;
+            BEGIN
+                WITH batch AS (
+                    SELECT NULLIF(e->>'id', '')                    AS id,
+                           NULLIF(e->>'source_post_id', '')        AS source_post_id,
+                           NULLIF(left(e->>'title_en', 255), '')   AS title_en
+                    FROM jsonb_array_elements(items) AS e
+                )
+                UPDATE %2$s sv
+                SET title_en = b.title_en, updated_at = now()
+                FROM batch b
+                WHERE b.title_en IS NOT NULL
+                  AND (sv.id::text = b.id OR sv.source_post_id = b.source_post_id);
+                GET DIAGNOSTICS updated_count = ROW_COUNT;
+                RETURN jsonb_build_object('success', true, 'updated', updated_count);
+            END;
+            $body$;
+        $f$, t.site, t.tbl);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.scraper_update_%s_title_en(jsonb) TO service_role',
+            t.site
+        );
+    END LOOP;
+END;
+$$;

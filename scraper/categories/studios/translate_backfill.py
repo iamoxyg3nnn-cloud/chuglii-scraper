@@ -24,12 +24,19 @@ from scraper.db import call_supabase_rpc, get_supabase_client  # noqa: E402
 
 
 def fetch_pending(limit: int, site: str = "madouer") -> List[Dict[str, Any]]:
-    """Fetches rows whose title_en is missing/empty via the per-site get RPC."""
+    """Fetches rows whose title_en is missing/empty via the per-site get RPC.
+
+    The RPC has no 'title_en IS NULL' filter, so the whole table is walked.
+    Stopping after ``limit`` oldest rows meant this script kept re-reading the
+    same already-translated head of the table and reported "0 rows need titles"
+    while hundreds of untranslated rows sat further down.
+    """
     supabase = get_supabase_client()
-    rows: List[Dict[str, Any]] = []
+    pending: List[Dict[str, Any]] = []
     batch = 500
     offset = 0
-    while len(rows) < limit:
+    scanned = 0
+    while len(pending) < limit:
         res = (
             supabase.rpc(
                 f"scraper_get_{site}_videos",
@@ -38,7 +45,7 @@ def fetch_pending(limit: int, site: str = "madouer") -> List[Dict[str, Any]]:
                     "p_tag": None,
                     "p_search": None,
                     "p_sort": "oldest",
-                    "p_limit": min(batch, limit - len(rows)),
+                    "p_limit": batch,
                     "p_offset": offset,
                 },
             )
@@ -48,10 +55,13 @@ def fetch_pending(limit: int, site: str = "madouer") -> List[Dict[str, Any]]:
         )
         if not res:
             break
-        rows.extend(res)
+        scanned += len(res)
         offset += len(res)
-    pending = [r for r in rows if not (r.get("title_en") or "").strip()]
-    return pending
+        pending.extend(r for r in res if not (r.get("title_en") or "").strip())
+        if len(res) < batch:
+            break
+    print(f"[*] [{site}] scanned {scanned} row(s); {len(pending)} need an English title")
+    return pending[:limit]
 
 
 def update_title_en(items: List[Dict[str, Any]], site: str = "madouer") -> int:
@@ -89,6 +99,9 @@ def _run_site(site: str, pending: List[Dict[str, Any]]) -> tuple:
         if en:
             translated.append(
                 {
+                    # The update RPC matches on id or source_post_id; sending
+                    # both makes the write exact whichever key it prefers.
+                    "id": row.get("id"),
                     "source_site": row.get("source_site") or site,
                     "source_post_id": str(row.get("source_post_id") or ""),
                     "title_en": en[:255],

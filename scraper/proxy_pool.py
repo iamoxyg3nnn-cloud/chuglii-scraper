@@ -33,6 +33,11 @@ class AutoProxyPool:
         # next one: validation results are remembered per target host.
         self._target_refreshed: dict = {}
         self._target_working: dict = {}
+        self._target_attempts: dict = {}
+        # A host that blocks datacenter IPs usually blocks the free pools too.
+        # Probing 60 candidates for it on every URL would burn the session, so
+        # each target gets a small number of harvests, then we give up on it.
+        self.max_attempts_per_target = 2
 
     def harvest_candidates(self, max_candidates: int = 300) -> List[str]:
         """Harvests fresh proxy candidates from multiple public APIs."""
@@ -145,14 +150,21 @@ class AutoProxyPool:
             return random.choice(self.working_proxies)
 
         now = time.time()
+        attempts = self._target_attempts.get(target, 0)
         last = max(self._target_refreshed.get(target, 0.0), self.last_refresh_at)
-        if now - last >= self.refresh_cooldown:
+        if attempts < self.max_attempts_per_target and now - last >= self.refresh_cooldown:
+            self._target_attempts[target] = attempts + 1
             self.failed_proxies.clear()
             self.refresh_pool(max_probes=60, workers=20, target_url=target)
             local = [p for p in self._target_working.get(target, []) if p in self.working_proxies]
             if local:
                 return random.choice(local)
-        if self.working_proxies:
+            if self._target_attempts[target] >= self.max_attempts_per_target:
+                print(
+                    f"    [!] No usable proxy for {target[:70]} after "
+                    f"{self.max_attempts_per_target} harvests; giving up on proxies for it this session."
+                )
+        if self.working_proxies and attempts == 0:
             return random.choice(self.working_proxies)
         return None
 

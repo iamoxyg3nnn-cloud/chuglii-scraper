@@ -43,7 +43,7 @@ LIST_PATHS = [f"/category/sstp/live/{n}/" for n in range(1, 5)] + ["/category/ss
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 IMAGE_KEY = b"f5d965df75336270"
 IMAGE_IV = b"97b60394abc2fbe1"
-QUALITY_PROBE_PER_CYCLE = 6  # one segment each — cheap but real
+QUALITY_PROBE_PER_CYCLE = 10  # one segment each — cheap but real
 
 
 def log(msg: str) -> None:
@@ -264,12 +264,36 @@ def probe_missing_qualities(limit: int) -> None:
 
 
 def refresh_frames(limit: int) -> None:
-    """Re-capture frames for videos that already have one, oldest first —
-    so thumbnails keep rotating with the broadcast."""
+    """Capture first frames for videos that lack one, then refresh the oldest
+    existing frames — so every thumbnail rotates with the broadcast."""
     base, s = sb()
+    # 1) videos with no frame yet (highest priority)
     r = s.get(
         f"{base}/rest/v1/live_streams",
-        params={"select": "id", "has_frame": "eq.true", "active": "eq.true", "order": "frame_captured_at.asc", "limit": str(limit)},
+        params={"select": "id", "has_frame": "eq.false", "active": "eq.true", "order": "last_seen_at.desc", "limit": str(limit)},
+    )
+    rows = r.json() or []
+    done = 0
+    for row in rows:
+        label, frame = probe_quality_and_frame(str(row["id"]))
+        if frame:
+            import base64
+            patch = {
+                "frame_jpeg": base64.b64encode(frame).decode(),
+                "has_frame": True,
+                "frame_captured_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if label:
+                patch["quality_label"] = label
+            s.patch(f"{base}/rest/v1/live_streams", json=patch, params={"id": f"eq.{row['id']}"})
+            done += 1
+    if rows:
+        log(f"first frames: {done}/{len(rows)} captured")
+        return
+    # 2) refresh the oldest existing frames
+    r = s.get(
+        f"{base}/rest/v1/live_streams",
+        params={"select": "id", "has_frame": "eq.true", "active": "eq.true", "order": "frame_captured_at.asc.nullslast", "limit": str(limit)},
     )
     rows = r.json() or []
     done = 0

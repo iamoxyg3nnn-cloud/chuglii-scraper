@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - vendored fallback
         Fetcher = None
 
 from scraper.categories.fangsung.categories import category_info, is_enabled
+from scraper.categories.listing_errors import ListingUnavailable
 from scraper import net as _net
 
 BASE_URL = "https://www.fangsung.com"
@@ -175,10 +176,16 @@ def scrape_listing(category_term: str, page_num: int) -> Tuple[List[Dict[str, An
     url = f"{BASE_URL}/a%E7%89%87/search/{quote(term)}?page={page_num}"
     resp = fetch_page(url)
     if not resp:
-        return [], None
+        # A blocked/timed-out listing is not the end of the catalogue; the
+        # pipeline must keep its cursor instead of treating this as "empty".
+        status = getattr(fetch_page, "last_status", None)
+        if status in (404, 410):
+            return [], None
+        raise ListingUnavailable(f"HTTP {status or 'error'} on {url}")
 
     html = getattr(resp, "html_content", "") or ""
     if len(html) < 5000 or "card-img-top" not in html:
+        # Real (200) page without any card markup: this term is exhausted.
         return [], None
 
     # Pair each detail link with the img inside its card block.

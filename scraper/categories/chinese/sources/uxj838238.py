@@ -42,6 +42,7 @@ from scraper.categories.chinese.categories import (
     category_info,
     is_enabled,
 )
+from scraper.categories.listing_errors import ListingUnavailable
 from scraper import net as _net
 
 BASE_URL = "https://uxj.838238.xyz"
@@ -193,11 +194,16 @@ def scrape_listing(category_id: str, page_num: int) -> Tuple[List[Dict[str, Any]
     url = f"{BASE_URL}/list/{category_id}-{max(1, int(page_num))}.html"
     resp = fetch_page(url)
     if not resp:
-        return [], None
+        # Could not fetch at all (timeout, anti-bot, 5xx). This is NOT the end
+        # of the listing: the caller must keep its cursor and retry later.
+        status = getattr(fetch_page, "last_status", None)
+        if status in (404, 410):
+            return [], None
+        raise ListingUnavailable(f"HTTP {status or 'error'} on {url}")
 
     payload = decode_payload(getattr(resp, "html_content", "") or "")
     if not payload:
-        # Soft-404 / anti-bot page: no payload present.
+        # Soft-404 / removed content: a definitive end of this listing.
         return [], None
 
     listing = payload.get("l") or {}

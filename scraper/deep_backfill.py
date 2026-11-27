@@ -333,7 +333,9 @@ def run_deep_backfill(
                         crawled_pages += crawled
                         progressed = True
                 if isinstance(detected, int) and detected > 0:
-                    # Never let an inflated advertised total pull the cursor back.
+                    # Never let an inflated advertised total pull the cursor back;
+                    # a *confirmed* end (true_max_pages / empty page) is what
+                    # retires a zone.
                     state["max_pages"] = max(
                         int(state.get("max_pages", 0) or 0), detected
                     )

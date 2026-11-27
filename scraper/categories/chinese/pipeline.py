@@ -41,11 +41,13 @@ try:
         DEFAULT_CATEGORIES,
         category_info,
     )
+    from scraper.categories.listing_errors import ListingUnavailable
 except ImportError:
     from polish import polish_chinese_record
     from translate import save_cache as save_translation_cache
     from sources import SOURCES
     from categories import ALL_ENABLED_CATEGORIES, DEFAULT_CATEGORIES, category_info
+    from listing_errors import ListingUnavailable  # type: ignore
 
 from scrapling import Fetcher
 
@@ -255,20 +257,42 @@ def run_category_crawl(
         "upserted": 0,
         "errors": 0,
         "last_error": None,
+        "true_max_pages": None,
     }
     known_page_streak = 0
 
     for page_idx in range(max_pages):
         page_num = start_page + page_idx
-        cards, detected_max = source_mod.scrape_listing(category_id, page_num)
+        try:
+            cards, detected_max = source_mod.scrape_listing(category_id, page_num)
+        except ListingUnavailable as e:
+            # Transient block/timeout: keep the cursor here, do not end the zone.
+            print(f"[!] {cat_key} page {page_num} unavailable ({e}); zone left incomplete for retry.")
+            stats["errors"] += 1
+            stats["last_error"] = f"listing unavailable on page {page_num}: {e}"
+            stats["listing_unavailable"] = True
+            if progress is not None:
+                cp = progress.setdefault("categories", {}).setdefault(cat_key, {})
+                cp["last_error"] = stats["last_error"]
+                save_progress(progress)
+            break
         if isinstance(detected_max, int) and detected_max > 0:
             stats["detected_max_pages"] = max(stats.get("detected_max_pages") or 0, detected_max)
 
         if not cards:
-            print(f"[-] No cards found on {cat_key} page {page_num}. Ending category crawl.")
+            # A real 200 page with no cards is the true end of this listing. Pin
+            # it so the cursor never re-crawls the same empty pages: the site's
+            # advertised total is frequently larger than the real catalogue.
+            # Never claim pages we did not fetch, and never exceed the total the
+            # site itself reported on this page.
+            end = max(0, page_num - 1)
+            if isinstance(detected_max, int) and 0 < detected_max < end:
+                end = detected_max
+            stats["true_max_pages"] = end
+            print(f"[-] No cards on {cat_key} page {page_num}; true end = page {page_num - 1}. Ending category crawl.")
             if progress is not None:
                 cp = progress.setdefault("categories", {}).setdefault(cat_key, {})
-                cp["last_error"] = f"No cards on page {page_num} (possible end/404/anti-bot)"
+                cp["last_error"] = f"end of listing at page {page_num}"
                 save_progress(progress)
             break
 
@@ -478,6 +502,19 @@ def run_chinese_pipeline(
                 if isinstance(detected_max, int) and detected_max > 0:
                     cat_cp["max_pages"] = max(int(cat_cp.get("max_pages", 0) or 0), detected_max)
                 cat_status = "completed"
+                true_max = res.get("true_max_pages")
+                if isinstance(true_max, int) and true_max >= 0 and not res.get("listing_unavailable"):
+                    # The listing genuinely ended here: pin the cursor past it so
+                    # this zone is never re-crawled (nor its empty pages asked
+                    # for again) in a later session.
+                    cat_cp["max_pages"] = max(1, true_max)
+                    cat_cp["current_page"] = max(2, true_max + 1)
+                    cat_cp["stall_count"] = 0
+                    print(f"    [✓] {cat_key}: catalogue ends at page {true_max}; zone complete.")
+                    progress.setdefault("categories", {}).setdefault(cat_key, {})["status"] = "completed"
+                    save_checkpoints(checkpoints)
+                    save_progress(progress)
+                    continue
                 if not res.get("upsert_failed"):
                     crawled = int(res.get("pages_crawled", 0) or 0)
                     unresolved = int(res.get("skipped_unresolved", 0) or 0)

@@ -793,9 +793,19 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                             cat_state["current_page"] = curr_cursor + crawled
                     else:
                         failed_categories.append(category_id)
-                    detected_max = c_stats.get("detected_max_pages")
-                    if isinstance(detected_max, int) and detected_max > 0:
-                        cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
+                    true_max = c_stats.get("true_max_pages")
+                    if isinstance(true_max, int) and true_max >= 0:
+                        # The listing genuinely ended here; pin past it so this
+                        # zone stops re-crawling empty pages every session. The
+                        # advertised total must not undo that pin (it is often
+                        # larger than the real catalogue), hence the else.
+                        cat_state["max_pages"] = max(1, true_max)
+                        cat_state["current_page"] = max(2, true_max + 1)
+                        print(f"    [✓] {cat_key}: catalogue ends at page {true_max}; zone complete.")
+                    else:
+                        detected_max = c_stats.get("detected_max_pages")
+                        if isinstance(detected_max, int) and detected_max > 0:
+                            cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
 
                 cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
                 cat_progress["status"] = "failed" if category_id in failed_categories else "completed"
@@ -901,9 +911,19 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
                             cat_state["current_page"] = curr_cursor + crawled
                     else:
                         failed_categories.append(category_id)
-                    detected_max = c_stats.get("detected_max_pages")
-                    if isinstance(detected_max, int) and detected_max > 0:
-                        cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
+                    true_max = c_stats.get("true_max_pages")
+                    if isinstance(true_max, int) and true_max >= 0:
+                        # The listing genuinely ended here; pin past it so this
+                        # zone stops re-crawling empty pages every session. The
+                        # advertised total must not undo that pin (it is often
+                        # larger than the real catalogue), hence the else.
+                        cat_state["max_pages"] = max(1, true_max)
+                        cat_state["current_page"] = max(2, true_max + 1)
+                        print(f"    [✓] {cat_key}: catalogue ends at page {true_max}; zone complete.")
+                    else:
+                        detected_max = c_stats.get("detected_max_pages")
+                        if isinstance(detected_max, int) and detected_max > 0:
+                            cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
 
                 cat_progress = progress.setdefault("categories", {}).setdefault(cat_key, {})
                 cat_progress["status"] = "failed" if category_id in failed_categories else "completed"
@@ -1010,9 +1030,19 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                             cat_state["current_page"] = curr_cursor + crawled
                     else:
                         failed_categories.append(category_id)
-                    detected_max = c_stats.get("detected_max_pages")
-                    if isinstance(detected_max, int) and detected_max > 0:
-                        cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
+                    true_max = c_stats.get("true_max_pages")
+                    if isinstance(true_max, int) and true_max >= 0:
+                        # The listing genuinely ended here; pin past it so this
+                        # zone stops re-crawling empty pages every session. The
+                        # advertised total must not undo that pin (it is often
+                        # larger than the real catalogue), hence the else.
+                        cat_state["max_pages"] = max(1, true_max)
+                        cat_state["current_page"] = max(2, true_max + 1)
+                        print(f"    [✓] {cat_key}: catalogue ends at page {true_max}; zone complete.")
+                    else:
+                        detected_max = c_stats.get("detected_max_pages")
+                        if isinstance(detected_max, int) and detected_max > 0:
+                            cat_state["max_pages"] = max(int(cat_state.get("max_pages", 0) or 0), detected_max)
 
                 cat_progress["status"] = "failed" if category_id in failed_categories else "completed"
             except Exception as e:

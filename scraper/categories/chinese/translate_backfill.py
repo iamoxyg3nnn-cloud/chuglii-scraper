@@ -26,12 +26,20 @@ from scraper.db import call_supabase_rpc, get_supabase_client  # noqa: E402
 
 
 def fetch_pending(limit: int) -> List[Dict[str, Any]]:
-    """Fetches rows whose title_en is missing/empty via the get RPC."""
+    """Fetches rows whose title_en is missing/empty via the get RPC.
+
+    The RPC has no 'title_en IS NULL' filter, so the only way to see every
+    pending row is to walk the whole table. The old version stopped after
+    ``limit`` rows sorted oldest-first, which meant it kept re-reading the same
+    first page of rows that already had titles: 5,492 untranslated rows stayed
+    invisible while each run reported "19 rows need English titles".
+    """
     supabase = get_supabase_client()
-    rows: List[Dict[str, Any]] = []
+    pending: List[Dict[str, Any]] = []
     batch = 500
     offset = 0
-    while len(rows) < limit:
+    scanned = 0
+    while len(pending) < limit:
         res = (
             supabase.rpc(
                 "scraper_get_chinese_videos",
@@ -42,7 +50,7 @@ def fetch_pending(limit: int) -> List[Dict[str, Any]]:
                     "p_tag": None,
                     "p_search": None,
                     "p_sort": "oldest",
-                    "p_limit": min(batch, limit - len(rows)),
+                    "p_limit": batch,
                     "p_offset": offset,
                     "p_group": None,
                 },
@@ -53,10 +61,13 @@ def fetch_pending(limit: int) -> List[Dict[str, Any]]:
         )
         if not res:
             break
-        rows.extend(res)
+        scanned += len(res)
         offset += len(res)
-    pending = [r for r in rows if not (r.get("title_en") or "").strip()]
-    return pending
+        pending.extend(r for r in res if not (r.get("title_en") or "").strip())
+        if len(res) < batch:
+            break
+    print(f"[*] scanned {scanned} row(s); {len(pending)} need an English title")
+    return pending[:limit]
 
 
 def update_title_en(items: List[Dict[str, Any]]) -> int:

@@ -50,11 +50,31 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 _THUMB_HOST = "cdn52.apianmeng.com"
 _STREAM_HOST = "bbcdn.xianshipian.com"
 
-_RE_DETAIL_LINK = re.compile(r"href=\"(https://www\.fangsung\.com/a%E7%89%87/(\d+)/[^\"]+)\"")
+# Detail/link segments: the site emitted percent-encoded paths
+# (/a%E7%89%87/123/SLUG) when this scraper was written and now emits the raw
+# UTF-8 segment (/a片/123/SLUG). Matching only the encoded form made every
+# listing parse as "0 cards" while the fetch itself succeeded.
+_A_SEG = r"a(?:%E7%89%87|%e7%89%87|片)"
+
+
+def _card_pattern() -> "re.Pattern[str]":
+    """Anchor -> card div -> img, tolerant of both link encodings."""
+    return re.compile(
+        r"<a[^>]*href=\"(https://www\.fangsung\.com/" + _A_SEG + r"/(\d+)/[^\"]+)\">\s*"
+        r"<div class=\"card[^\"]*\">\s*"
+        r"<img[^>]*data-src=\"(https://cdn\d+\.apianmeng\.com/[^\"]+)\"[^>]*alt=\"([^\"]*)\""
+    )
+
+
+_RE_CARD = _card_pattern()
 _RE_CARD_IMG = re.compile(r"<img[^>]*data-src=\"(https://cdn\d+\.apianmeng\.com/[^\"]+)\"[^>]*alt=\"([^\"]*)\"")
 _RE_TOTAL = re.compile(r"共\s*(\d+)")
 _RE_VAR_SOURCE = re.compile(r"var\s+source\s*=\s*\"([^\"]+\.m3u8)\"")
-_RE_TAG_CHIP = re.compile(r"<a[^>]*href=\"https://www\.fangsung\.com/a%E7%89%87/search/([^\"]+)\"[^>]*class=\"btn btn-outline-light btn-sm[^\"]*\"[^>]*>([^<]+)</a>")
+_RE_DETAIL_LINK = re.compile(r"href=\"(https://www\.fangsung\.com/" + _A_SEG + r"/(\d+)/[^\"]+)\"")
+_RE_TAG_CHIP = re.compile(
+    r"<a[^>]*href=\"https://www\.fangsung\.com/" + _A_SEG + r"/search/([^\"]+)\"[^>]*"
+    r"class=\"btn btn-outline-light btn-sm[^\"]*\"[^>]*>([^<]+)</a>"
+)
 _RE_DATE_IN_PATH = re.compile(r"/(\d{4}-\d{2}-\d{2})/")
 
 # Stream CDNs observed on live detail pages (verified 2026-11-25 by probing
@@ -165,11 +185,7 @@ def scrape_listing(category_term: str, page_num: int) -> Tuple[List[Dict[str, An
     # Note: anchors carry target="_blank" (and sometimes other attrs) before href.
     items: List[Dict[str, Any]] = []
     seen_ids = set()
-    for m in re.finditer(
-        r"<a[^>]*href=\"(https://www\.fangsung\.com/a%E7%89%87/(\d+)/[^\"]+)\">\s*<div class=\"card[^\"]*\">\s*"
-        r"<img[^>]*data-src=\"(https://cdn\d+\.apianmeng\.com/[^\"]+)\"[^>]*alt=\"([^\"]*)\"",
-        html,
-    ):
+    for m in _RE_CARD.finditer(html):
         detail_url, post_id, thumb, alt_title = m.group(1), m.group(2), m.group(3), m.group(4)
         if post_id in seen_ids:
             continue

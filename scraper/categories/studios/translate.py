@@ -34,6 +34,16 @@ _cache: Dict[str, Optional[str]] = {}
 _cache_loaded = False
 _cache_dirty = False
 
+# A dead/blocked endpoint must not cost 3 requests x N titles: after this many
+# consecutive transport failures we stop calling out for the rest of the
+# process, and never record those failures as "this title cannot be
+# translated". The old code wrote None into the persisted cache on *any*
+# exception, so one transient outage permanently poisoned thousands of titles
+# (5,492 rows with no title_en were sitting in chinese_videos because of it).
+_FAIL_STREAK_LIMIT = 5
+_fail_streak = 0
+_endpoint_down = False
+
 
 def _load_cache() -> None:
     global _cache, _cache_loaded
@@ -83,6 +93,10 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
     if text in _cache:
         return _cache[text]
 
+    global _fail_streak, _endpoint_down
+    if _endpoint_down:
+        return None
+
     url = _TRANSLATE_URL + urllib.parse.quote(text[:450])
     for attempt in range(retries):
         try:
@@ -98,6 +112,7 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
             )
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
+            _fail_streak = 0
             # dj=1 response: {"sentences": [{"trans": "...", ...}, ...], ...}
             sentences = payload.get("sentences") or []
             translated = "".join(
@@ -107,9 +122,22 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
                 _cache[text] = translated
                 _cache_dirty = True
                 return translated
+            # A *successful* answer with no translation is deterministic:
+            # remember it so the same title is not re-sent every session.
+            _cache[text] = None
+            _cache_dirty = True
+            return None
         except Exception:
             if attempt < retries - 1:
                 time.sleep(0.8 * (attempt + 1))
-    _cache[text] = None  # negative cache: don't hammer a failing endpoint
-    _cache_dirty = True
+
+    # Transport failure: DO NOT cache. The title stays eligible for the next
+    # run instead of being permanently marked untranslatable.
+    _fail_streak += 1
+    if _fail_streak >= _FAIL_STREAK_LIMIT:
+        _endpoint_down = True
+        print(
+            f"    [!] Translation endpoint unreachable after {_fail_streak} attempts; "
+            "skipping further translations this session (titles stay queued)."
+        )
     return None

@@ -46,6 +46,7 @@ except Exception:  # pragma: no cover - vendored fallback
         Fetcher = None
 
 from scraper.categories.studios.categories import category_info, is_enabled
+from scraper.categories.studios.errors import ListingUnavailable
 from scraper import net as _net
 
 BASE_URL = "https://91dasj.com"

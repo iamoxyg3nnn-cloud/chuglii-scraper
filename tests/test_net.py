@@ -295,3 +295,28 @@ def test_page_css_matches_scrapling_selector_surface(monkeypatch):
     assert arts[0].css("img")[0].attrib["data-src"] == "t.jpg"
     assert page.css("a.page-numbers")[0].attrib["href"] == "/page/3/"
     assert page.css("nothing-here") == []
+
+
+def test_media_urls_never_launch_a_browser(monkeypatch):
+    """An HLS manifest 403 is a CDN rule, not a Cloudflare interstitial.
+
+    The fleet used to launch Chromium on content.zavastream.com/....m3u8 and log
+    'Scrapling solve failed ... Executable doesn't exist' every run.
+    """
+    install_plain(monkeypatch, [FakeResp(403, b"")])
+
+    def must_not_run(url, host):
+        raise AssertionError(f"browser solve launched for media URL {url}")
+
+    monkeypatch.setattr(net, "_solve_cloudflare", must_not_run)
+    monkeypatch.setattr(net, "_is_media_url", lambda url: True)
+    page = net.fetch("https://content.zavastream.com/x/index.m3u8", retries=1)
+    assert page is not None and page.challenge is True
+
+
+def test_is_media_url_shapes():
+    assert net._is_media_url("https://cdn/x/index.m3u8")
+    assert net._is_media_url("https://cdn/a/b/index.m3u8?token=1")
+    assert net._is_media_url("https://cdn/img/cover.JPG")
+    assert not net._is_media_url("https://site/category/cate3/")
+    assert not net._is_media_url("https://site/page.html")

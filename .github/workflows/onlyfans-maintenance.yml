@@ -64,6 +64,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
 
+      - name: Install headless browser (Cloudflare solver)
+        # net.py escalates challenges/WAF blocks to Scrapling's StealthyFetcher,
+        # which drives Chromium through patchright. Without this step every solve
+        # in this workflow died with "BrowserType.launch_persistent_context:
+        # Executable doesn't exist at ~/.cache/ms-playwright/chromium-1248"
+        # (seen on content.zavastream.com during the sweep).
+        run: python -m patchright install --with-deps chromium
+
       - name: Sweep Archive Id Space (borntobefuck)
         # Listings show a rolling ~1-month window (597 of ~23k ids), so the
         # archive is only reachable by walking the id space. The cursor lives in

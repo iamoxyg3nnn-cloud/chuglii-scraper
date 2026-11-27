@@ -195,6 +195,12 @@ def scrape_listing_page_with_status(
                     tags = [c.replace("tag-", "") for c in classes if c.startswith("tag-")]
                     actors = [c.replace("actors-", "") for c in classes if c.startswith("actors-")]
 
+                    # Some cards are ad/placeholder blocks with no
+                    # data-post-id: they used to become a junk row with
+                    # source_post_id "None" and an empty title.
+                    if not (post_id and str(post_id).strip() and title.strip()):
+                        continue
+
                     items.append({
                         "post_id": post_id,
                         "title": title,

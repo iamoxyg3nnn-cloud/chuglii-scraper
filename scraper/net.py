@@ -404,6 +404,21 @@ def _throttle(host: str, min_interval: Optional[float] = None) -> None:
 
 # ─── Block detection & per-host egress memory ───────────────────────────────
 
+# Media URLs never benefit from a browser solve: a 403 on an HLS manifest or an
+# mp4 segment is answered by the CDN (Referer/token), and "downloading" it via
+# a headless browser is pointless. The fleet used to launch Chromium for these
+# and log "Scrapling solve failed ... Executable doesn't exist" on every run.
+_MEDIA_SUFFIXES = (
+    ".m3u8", ".mpd", ".mp4", ".m4s", ".ts", ".webm", ".mkv",
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif",
+)
+
+
+def _is_media_url(url: str) -> bool:
+    path = (urlparse(url).path or "").lower()
+    return path.endswith(_MEDIA_SUFFIXES)
+
+
 def is_block_status(status: int) -> bool:
     """True for statuses that describe *us* being rejected, not the URL."""
     return int(status or 0) in BLOCK_STATUSES
@@ -709,7 +724,11 @@ def _escalate(
     (fangsung). Every step is best-effort and failures fall through.
     """
     # 1. Stealth browser directly (Scrapling is the Cloudflare solver).
-    solved = _solve_cloudflare(url, host)
+    if _is_media_url(url):
+        # Nothing a browser can do for a manifest/image; skip straight to proxy.
+        solved = None
+    else:
+        solved = _solve_cloudflare(url, host)
     if solved is not None:
         if allow_cache:
             _cache_put(url, solved, solved.body)
@@ -725,7 +744,7 @@ def _escalate(
         return proxied
 
     # 3. Stealth browser through a proxy (hard IP + challenge together).
-    if PROXY_FALLBACK:
+    if PROXY_FALLBACK and not _is_media_url(url):
         try:
             from scraper.proxy_pool import GLOBAL_PROXY_POOL
 
@@ -819,7 +838,13 @@ def fetch(
             return page
 
         if page.challenge or page.status in (403, 503):
-            solved = _solve_cloudflare(url, host) if accept_challenge_fallback else None
+            # A media 403 is a CDN rule (Referer/token/expiry), never a
+            # Cloudflare interstitial: do not spend a browser launch on it.
+            solved = (
+                _solve_cloudflare(url, host)
+                if accept_challenge_fallback and not _is_media_url(url)
+                else None
+            )
             if solved is not None:
                 _cache_put(url, solved, solved.body)
                 return solved

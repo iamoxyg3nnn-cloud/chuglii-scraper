@@ -5,12 +5,12 @@
       "site": "desi49",
       "errors": 0,
       "status": "completed",
-      "upserted": 18,
+      "upserted": 52,
       "last_error": null,
-      "finished_at": "2026-11-28T11:18:13.400935+00:00",
+      "finished_at": "2026-11-28T12:42:05.509330+00:00",
       "items_found": 56,
-      "current_page": 33,
-      "skipped_dead": 38,
+      "current_page": 34,
+      "skipped_dead": 4,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -18,12 +18,12 @@
       "site": "mydesi",
       "errors": 0,
       "status": "completed",
-      "upserted": 5,
+      "upserted": 9,
       "last_error": null,
-      "finished_at": "2026-11-28T11:18:19.045530+00:00",
+      "finished_at": "2026-11-28T12:42:10.345233+00:00",
       "items_found": 56,
-      "current_page": 26,
-      "skipped_dead": 51,
+      "current_page": 27,
+      "skipped_dead": 47,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -31,11 +31,11 @@
       "site": "spicymms",
       "errors": 0,
       "status": "completed",
-      "upserted": 20,
+      "upserted": 18,
       "last_error": null,
-      "finished_at": "2026-11-28T11:17:57.238750+00:00",
+      "finished_at": "2026-11-28T12:41:50.273878+00:00",
       "items_found": 20,
-      "current_page": 33,
+      "current_page": 34,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -44,11 +44,11 @@
       "site": "indianbfclips",
       "errors": 0,
       "status": "completed",
-      "upserted": 20,
+      "upserted": 17,
       "last_error": null,
-      "finished_at": "2026-11-28T11:18:30.427559+00:00",
+      "finished_at": "2026-11-28T12:42:20.177095+00:00",
       "items_found": 20,
-      "current_page": 33,
+      "current_page": 34,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -61,11 +61,11 @@
     "mydesi",
     "indianbfclips"
   ],
-  "updated_at": "2026-11-28T11:18:30.713355+00:00",
+  "updated_at": "2026-11-28T12:42:20.339690+00:00",
   "failed_sites": [],
   "degraded_sites": [],
-  "finished_at": "2026-11-28T11:18:30.713330+00:00",
+  "finished_at": "2026-11-28T12:42:20.339672+00:00",
   "totals": {
-    "upserted": 63
+    "upserted": 100
   }
 }

@@ -1,224 +1,224 @@
 {
   "total_ingested": 0,
   "madouer:1": {
-    "max_pages": 1163,
-    "current_page": 16
+    "max_pages": 1165,
+    "current_page": 17
   },
   "madouer:3": {
     "max_pages": 962,
-    "current_page": 15
+    "current_page": 16
   },
   "madouer:4": {
     "max_pages": 282,
-    "current_page": 15
+    "current_page": 16
   },
   "madouer:5": {
     "max_pages": 2359,
-    "current_page": 14
+    "current_page": 15
   },
   "madouer:6": {
     "max_pages": 100,
-    "current_page": 12
+    "current_page": 13
   },
   "madouer:7": {
     "max_pages": 50,
-    "current_page": 12
+    "current_page": 13
   },
   "madouer:8": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:9": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:10": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:11": {
     "max_pages": 50,
-    "current_page": 10
+    "current_page": 11
   },
   "madouer:12": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:13": {
     "max_pages": 86,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:14": {
     "max_pages": 101,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:15": {
-    "max_pages": 50,
+    "max_pages": 8,
     "current_page": 9
   },
   "madouer:16": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:17": {
-    "max_pages": 50,
+    "max_pages": 5,
     "current_page": 6
   },
   "madouer:18": {
     "max_pages": 58,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:22": {
-    "max_pages": 600,
-    "current_page": 11
+    "max_pages": 601,
+    "current_page": 12
   },
   "madouer:31": {
     "max_pages": 164,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:32": {
     "max_pages": 157,
-    "current_page": 10
+    "current_page": 11
   },
   "dasj91:aifl": {
-    "max_pages": 50,
+    "max_pages": 19,
     "current_page": 20
   },
   "dasj91:rmbg": {
     "max_pages": 59,
-    "current_page": 10
+    "current_page": 11
   },
   "dasj91:jxth": {
     "max_pages": 50,
-    "current_page": 10
+    "current_page": 11
   },
   "dasj91:ldcz": {
     "max_pages": 54,
-    "current_page": 10
+    "current_page": 11
   },
   "dasj91:qwys": {
     "max_pages": 50,
-    "current_page": 10
+    "current_page": 11
   },
   "madouhd:cate3": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 234,
+    "current_page": 2
   },
   "madouhd:cate4": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 147,
+    "current_page": 2
   },
   "madouhd:cate5": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate6": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate8": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 510,
+    "current_page": 2
   },
   "madouhd:cate11": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate12": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate13": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 286,
+    "current_page": 2
   },
   "madouhd:cate14": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 514,
+    "current_page": 2
   },
   "madouhd:cate15": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 389,
+    "current_page": 2
   },
   "madouhd:cate17": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 51,
+    "current_page": 2
   },
   "madouhd:cate18": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 249,
+    "current_page": 2
   },
   "madouhd:cate19": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate20": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 108,
+    "current_page": 2
   },
   "madouhd:cate21": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate22": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate23": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate24": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate26": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate28": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate29": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate30": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate31": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate9": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 227,
+    "current_page": 2
   },
   "madouhd:cate27": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate71": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate72": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate173": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 1,
+    "current_page": 2
   },
   "madouhd:cate36": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate37": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 2
   },
   "madouhd:cate38": {
     "max_pages": 50,
@@ -712,5 +712,5 @@
     "max_pages": 4097,
     "current_page": 4
   },
-  "timestamp": "2026-11-28 09:37:18"
+  "timestamp": "2026-11-28 16:12:07"
 }

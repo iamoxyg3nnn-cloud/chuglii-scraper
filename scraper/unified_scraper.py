@@ -116,6 +116,21 @@ from scraper.categories.japanese.pipeline import (
     DEFAULT_CATEGORIES as JAV_CATEGORIES
 )
 
+def host_route_down(host: str) -> bool:
+    """True while a host is in its "no route can reach it" cool-down.
+
+    A feed whose origin is unreachable should stop walking its remaining zones:
+    each one would only re-pay the timeout. Dozens of Chinese zones were tried in
+    a row during run 46122179927 while uxj.838238.xyz refused every route.
+    """
+    try:
+        from scraper.net import hosts_down
+
+        return any(h == host or h.endswith(host) or host.endswith(h) for h in hosts_down())
+    except Exception:
+        return False
+
+
 def log(msg: str = "") -> None:
     """Prints message immediately flushed to stdout."""
     print(msg, flush=True)
@@ -674,6 +689,8 @@ def run_onlyfans_sync(
                     detected_max = c_stats.get("detected_max_pages")
                     if isinstance(detected_max, int) and detected_max > 0:
                         site_state["max_pages"] = max(int(site_state.get("max_pages", 0) or 0), detected_max)
+                    if c_stats.get("deadline_hit"):
+                        stopped_early = True
 
                 site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
                 site_progress["status"] = "failed" if site_key in failed_sites else "completed"
@@ -905,6 +922,14 @@ def run_chinese_sync(
                             cat_state["current_page"] = curr_cursor + crawled
                     else:
                         failed_categories.append(category_id)
+                    if c_stats.get("listing_unavailable") and host_route_down("uxj.838238.xyz"):
+                        stopped_early = True
+                        log("  [SKIP] uxj.838238.xyz is unreachable through every route; "
+                            "the remaining Chinese zones resume next cycle.")
+                        save_cn_known_ids(known_ids)
+                        save_checkpoints(checkpoints)
+                        save_cn_progress(progress)
+                        break
                     true_max = c_stats.get("true_max_pages")
                     if isinstance(true_max, int) and true_max >= 0:
                         # The listing genuinely ended here; pin past it so this

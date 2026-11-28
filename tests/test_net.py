@@ -417,3 +417,56 @@ def test_a_working_host_clears_the_down_counter(monkeypatch):
     net.fetch("https://recovers.test/a", retries=1)
     assert net.fetch("https://recovers.test/b", retries=1).status == 200
     assert "recovers.test" not in net.hosts_down()
+
+
+def test_proxy_timeout_is_bounded_so_the_breaker_can_trip(monkeypatch):
+    """A blocked host must be *detected* in seconds, not minutes.
+
+    Run 46122179927 spent 8.5 of its 4-minute slice on this: each fetch paid
+    30 s per proxy attempt, so the 3-strike breaker took 4.5 minutes to trip.
+    """
+    seen = {}
+
+    def fake_plain(url, timeout, headers, referer, proxy=None):
+        seen["timeout"] = timeout
+        return None
+
+    monkeypatch.setattr(net, "_plain_get", fake_plain)
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+    monkeypatch.setattr(net, "HOST_MIN_INTERVAL", 0.0)
+
+    class Pool:
+        def get_proxy(self, target_url=None, rotate=False):
+            return "http://127.0.0.1:1"
+
+        def report_failure(self, *a, **k):
+            pass
+
+        def report_success(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(net, "_proxy_pool", lambda: Pool())
+    monkeypatch.setattr(net, "PROXY_TIMEOUT", 7.0)
+
+    net.fetch("https://blocked.test/x", timeout=30.0, retries=1)
+    assert seen["timeout"] == 7.0, "proxy attempts must use PROXY_TIMEOUT, not the direct timeout"
+
+
+def test_host_down_short_circuits_concurrent_workers(monkeypatch):
+    """Once tripped, a worker must not start another doomed attempt."""
+    calls = []
+
+    def fake_plain(url, timeout, headers, referer, proxy=None):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(net, "_plain_get", fake_plain)
+    monkeypatch.setattr(net, "PROXY_FALLBACK", False)
+    monkeypatch.setattr(net, "HOST_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(net, "HOST_DOWN_STRIKES", 2)
+
+    for _ in range(4):
+        net.fetch(f"https://gone.test/{len(calls)}", retries=1)
+    before = len(calls)
+    net.fetch("https://gone.test/late", retries=1)
+    assert len(calls) == before

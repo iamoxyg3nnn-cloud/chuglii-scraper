@@ -860,7 +860,11 @@ def _proxy_get(
             return None
 
         started = time.time()
-        page = _plain_get(url, max(timeout, PROXY_TIMEOUT), headers, referer, proxy=proxy)
+        # PROXY_TIMEOUT, not max(timeout, PROXY_TIMEOUT): a blocked host must be
+        # *detected* quickly. With 30 s per proxy attempt and two attempts, one
+        # fetch cost a minute and the breaker took 4.5 minutes to trip (run
+        # 46122179927 spent 8.5 of its 4-minute slice on this).
+        page = _plain_get(url, PROXY_TIMEOUT, headers, referer, proxy=proxy)
         if page is not None and page.status == 200 and not page.challenge:
             page.via = "proxy"
             try:
@@ -879,6 +883,8 @@ def _proxy_get(
             pool.report_failure(proxy, url)
         except Exception:
             pass
+        if page is None:
+            _note_host_unreachable(host)      # no route answered: count it
     return None
 
 
@@ -1001,11 +1007,16 @@ def fetch(
             return proxied
 
     for attempt in range(attempts):
+        if _host_is_down(host):
+            return None
         _throttle(host, min_interval)
         page = _plain_get(url, timeout, headers, referer)
         last_page = page
 
         if page is None:                              # transport failure
+            _note_host_unreachable(host)
+            if _host_is_down(host):
+                return None                           # give up on this host now
             if attempt < attempts - 1:
                 time.sleep(min(1.5 * (attempt + 1), 6.0))
                 continue

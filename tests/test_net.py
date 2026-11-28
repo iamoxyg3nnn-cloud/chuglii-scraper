@@ -386,3 +386,34 @@ def test_transport_failure_marked_blocked_when_proxy_succeeds(monkeypatch):
     page = net.fetch("https://uxj.838238.xyz/list/1.html", retries=1)
     assert page.status == 200
     assert "uxj.838238.xyz" in net.blocked_hosts()
+
+
+def test_unreachable_host_is_skipped_after_repeated_failures(monkeypatch):
+    """A route that times out everywhere must stop costing the session.
+
+    Run 46114735791 still spent ~4 minutes per page on uxj.838238.xyz: each of
+    20 detail fetches re-paid a 30s direct timeout plus a 30s proxy timeout even
+    though nothing ever answered.
+    """
+    calls = install_plain(monkeypatch, [None])
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+    monkeypatch.setattr(net, "_proxy_get", lambda *a, **k: None)
+    monkeypatch.setattr(net, "HOST_DOWN_STRIKES", 2)
+
+    url = "https://unreachable.test/list/1.html"
+    assert net.fetch(url, retries=1) is None
+    assert net.fetch(url, retries=1) is None
+    assert net.fetch(url, retries=1) is None          # trips the breaker
+
+    before = len(calls)
+    assert net.fetch("https://unreachable.test/list/2.html", retries=1) is None
+    assert len(calls) == before, "a down host must not be requested again"
+    assert "unreachable.test" in net.hosts_down()
+
+
+def test_a_working_host_clears_the_down_counter(monkeypatch):
+    install_plain(monkeypatch, [None, FakeResp(200, b"<html>ok</html>")])
+    monkeypatch.setattr(net, "PROXY_FALLBACK", False)
+    net.fetch("https://recovers.test/a", retries=1)
+    assert net.fetch("https://recovers.test/b", retries=1).status == 200
+    assert "recovers.test" not in net.hosts_down()

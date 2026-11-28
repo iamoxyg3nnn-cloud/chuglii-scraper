@@ -94,6 +94,53 @@ BLOCKED_HOST_TTL = float(os.environ.get("SCRAPER_BLOCKED_HOST_TTL", "1800"))
 _BLOCKED_HOSTS: Dict[str, float] = {}
 _BLOCKED_LOCK = threading.Lock()
 
+# A host we cannot reach at all (direct times out AND the proxy fleet times out)
+# must stop costing us: run 46114735791 still spent ~4 minutes per page on
+# uxj.838238.xyz, because every one of 20 detail fetches re-paid a 30s direct
+# timeout plus a 30s proxy timeout. After HOST_DOWN_STRIKES unreachable fetches
+# the host is skipped entirely for HOST_DOWN_COOLDOWN seconds, so the feed moves
+# on (items stay unmarked in the ledger and are retried later) instead of
+# burning its whole slice on a dead route.
+HOST_DOWN_STRIKES = int(os.environ.get("SCRAPER_HOST_DOWN_STRIKES", "3"))
+HOST_DOWN_COOLDOWN = float(os.environ.get("SCRAPER_HOST_DOWN_COOLDOWN", "600"))
+_HOST_DOWN_STRIKES: Dict[str, int] = {}
+_HOST_DOWN_UNTIL: Dict[str, float] = {}
+_HOST_DOWN_LOCK = threading.Lock()
+
+
+def _host_is_down(host: str) -> bool:
+    with _HOST_DOWN_LOCK:
+        until = _HOST_DOWN_UNTIL.get(host, 0.0)
+        if until and time.time() >= until:
+            _HOST_DOWN_UNTIL.pop(host, None)
+            _HOST_DOWN_STRIKES.pop(host, None)
+            return False
+        return bool(until)
+
+
+def _note_host_unreachable(host: str) -> None:
+    with _HOST_DOWN_LOCK:
+        strikes = _HOST_DOWN_STRIKES.get(host, 0) + 1
+        _HOST_DOWN_STRIKES[host] = strikes
+        if strikes >= max(1, HOST_DOWN_STRIKES):
+            _HOST_DOWN_UNTIL[host] = time.time() + HOST_DOWN_COOLDOWN
+            _HOST_DOWN_STRIKES[host] = 0
+            print(
+                f"    [!] {host} unreachable through every route; skipping it for "
+                f"{int(HOST_DOWN_COOLDOWN / 60)} min (items stay queued for retry)."
+            )
+
+
+def _note_host_reachable(host: str) -> None:
+    with _HOST_DOWN_LOCK:
+        _HOST_DOWN_STRIKES.pop(host, None)
+
+
+def hosts_down() -> Dict[str, float]:
+    """Diagnostics: host -> seconds left in its unreachable cooldown."""
+    now = time.time()
+    return {h: round(u - now, 1) for h, u in list(_HOST_DOWN_UNTIL.items()) if u > now}
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -938,6 +985,9 @@ def fetch(
         if cached is not None:
             return cached
 
+    if _host_is_down(host):
+        return None                       # cool-down: do not pay the timeout again
+
     attempts = max(1, int(retries))
     last_page: Optional[Page] = None
 
@@ -969,9 +1019,11 @@ def fetch(
                     # every following URL paid 3 x 30s of doomed direct timeouts
                     # first (ujx.838238.xyz, ~1 URL every 90s).
                     _mark_host_blocked(host)
+                    _note_host_reachable(host)
                     if allow_cache:
                         _cache_put(url, proxied, proxied.body)
                     return proxied
+            _note_host_unreachable(host)
             return None
 
         # Dead URL: remember it so the next caller pays zero requests.
@@ -1028,6 +1080,7 @@ def fetch(
             )
 
         if page.status == 200:
+            _note_host_reachable(host)
             if _host_is_blocked(host):
                 forget_blocked_host(host)
             if allow_cache:

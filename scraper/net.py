@@ -841,8 +841,8 @@ def _proxy_get(
 ) -> Optional[Page]:
     """One request through the rotating proxy fleet for a blocked host.
 
-    Two different proxies are tried: free proxies die constantly, and a single
-    dead one must not cost the caller an entire zone. Success/failure is fed
+    Several different proxies are tried: free proxies die constantly, and a
+    single dead one must not cost the caller an entire zone. Success/failure is fed
     back into the pool so the next request starts from a better place.
     """
     if not PROXY_FALLBACK:
@@ -890,6 +890,7 @@ def _proxy_get(
                 # Proxy traffic works for this host: keep it proxy-first instead
                 # of re-failing directly every time the block flag expires.
                 _BLOCKED_HOSTS[host] = time.time()
+            _note_host_reachable(host)
             return page
 
         status = page.status if page is not None else "no response"
@@ -898,8 +899,10 @@ def _proxy_get(
             pool.report_failure(proxy, url)
         except Exception:
             pass
-        if page is None:
-            _note_host_unreachable(host)      # no route answered: count it
+        # A dead *proxy* is not evidence that the origin is unreachable:
+        # counting these as unreachable tripped the host breaker from free-proxy
+        # noise and skipped whole feeds ("unreachable through every route" while
+        # two uxj proxies were still in the pool).
     print(f"    [-] All {len(tried)} proxies failed for {host}; asking for more.")
     try:
         pool.ensure_for_host(url)
@@ -1012,7 +1015,16 @@ def fetch(
             return cached
 
     if _host_is_down(host):
-        return None                       # cool-down: do not pay the timeout again
+        # Cool-down: no direct attempt. But a host that refused our egress is
+        # exactly the case the free-proxy pool exists for, so still offer the
+        # queue a proxy route before declaring the URL unobtainable.
+        if accept_challenge_fallback:
+            proxied = _proxy_get(url, timeout, headers, referer, host)
+            if proxied is not None:
+                if allow_cache:
+                    _cache_put(url, proxied, proxied.body)
+                return proxied
+        return None
 
     attempts = max(1, int(retries))
     last_page: Optional[Page] = None
@@ -1035,26 +1047,22 @@ def fetch(
 
         if page is None:                              # transport failure
             _note_host_unreachable(host)
-            if _host_is_down(host):
-                return None                           # give up on this host now
-            if attempt < attempts - 1:
-                time.sleep(min(1.5 * (attempt + 1), 6.0))
-                continue
-            # No answer at all: the origin may be dropping our egress entirely.
-            if accept_challenge_fallback:
-                proxied = _proxy_get(url, timeout, headers, referer, host)
-                if proxied is not None:
-                    # The proxy got through where our egress could not: this is
-                    # a transport-level block, so route the *host* (not just
-                    # this URL) through the pool from now on. Without this,
-                    # every following URL paid 3 x 30s of doomed direct timeouts
-                    # first (ujx.838238.xyz, ~1 URL every 90s).
-                    _mark_host_blocked(host)
-                    _note_host_reachable(host)
-                    if allow_cache:
-                        _cache_put(url, proxied, proxied.body)
-                    return proxied
-            _note_host_unreachable(host)
+            if _host_is_down(host) or attempt == attempts - 1:
+                # Every route out of this runner failed (SSL reset, timeout).
+                # Try the proxy pool *before* concluding the URL is lost: the
+                # breaker used to short-circuit here, so a host that fails
+                # fast never reached the pool at all (uxj.838238.xyz).
+                if accept_challenge_fallback:
+                    proxied = _proxy_get(url, timeout, headers, referer, host)
+                    if proxied is not None:
+                        _mark_host_blocked(host)
+                        _note_host_reachable(host)
+                        if allow_cache:
+                            _cache_put(url, proxied, proxied.body)
+                        return proxied
+                return None
+            time.sleep(min(1.5 * (attempt + 1), 6.0))
+            continue
             return None
 
         # Dead URL: remember it so the next caller pays zero requests.

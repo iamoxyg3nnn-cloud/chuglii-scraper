@@ -131,6 +131,16 @@ def host_route_down(host: str) -> bool:
         return False
 
 
+def host_has_proxy_route(host: str) -> bool:
+    """True when the free-proxy pool has a validated route for ``host``."""
+    try:
+        from scraper.proxy_pool import GLOBAL_PROXY_POOL
+
+        return GLOBAL_PROXY_POOL.affinity_count(host) > 0
+    except Exception:
+        return False
+
+
 def log(msg: str = "") -> None:
     """Prints message immediately flushed to stdout."""
     print(msg, flush=True)
@@ -922,9 +932,13 @@ def run_chinese_sync(
                             cat_state["current_page"] = curr_cursor + crawled
                     else:
                         failed_categories.append(category_id)
-                    if c_stats.get("listing_unavailable") and host_route_down("uxj.838238.xyz"):
+                    if (
+                        c_stats.get("listing_unavailable")
+                        and host_route_down("uxj.838238.xyz")
+                        and not host_has_proxy_route("uxj.838238.xyz")
+                    ):
                         stopped_early = True
-                        log("  [SKIP] uxj.838238.xyz is unreachable through every route; "
+                        log("  [SKIP] uxj.838238.xyz has no route (direct or proxy); "
                             "the remaining Chinese zones resume next cycle.")
                         save_cn_known_ids(known_ids)
                         save_checkpoints(checkpoints)

@@ -2,27 +2,27 @@
   "total_ingested": 0,
   "madouer:1": {
     "max_pages": 1163,
-    "current_page": 15
+    "current_page": 16
   },
   "madouer:3": {
     "max_pages": 962,
-    "current_page": 14
+    "current_page": 15
   },
   "madouer:4": {
     "max_pages": 282,
-    "current_page": 14
+    "current_page": 15
   },
   "madouer:5": {
-    "max_pages": 2357,
-    "current_page": 13
+    "max_pages": 2359,
+    "current_page": 14
   },
   "madouer:6": {
     "max_pages": 100,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:7": {
     "max_pages": 50,
-    "current_page": 11
+    "current_page": 12
   },
   "madouer:8": {
     "max_pages": 50,
@@ -712,5 +712,5 @@
     "max_pages": 4097,
     "current_page": 4
   },
-  "timestamp": "2026-11-28 08:46:01"
+  "timestamp": "2026-11-28 09:37:18"
 }

@@ -17,8 +17,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 2: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E5%8F%B0%E6%B9%BE?page=2",
-      "started_at": "2026-11-28T08:41:44.029196+00:00",
-      "finished_at": "2026-11-28T08:41:44.250020+00:00"
+      "started_at": "2026-11-28T09:30:15.603602+00:00",
+      "finished_at": "2026-11-28T09:30:15.812081+00:00"
     },
     "fangsung:国产": {
       "category": "fangsung:国产",
@@ -36,8 +36,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E5%9B%BD%E4%BA%A7?page=1",
-      "started_at": "2026-11-28T08:41:45.844935+00:00",
-      "finished_at": "2026-11-28T08:41:46.004130+00:00"
+      "started_at": "2026-11-28T09:30:17.250768+00:00",
+      "finished_at": "2026-11-28T09:30:17.453173+00:00"
     },
     "fangsung:大陆": {
       "category": "fangsung:大陆",
@@ -55,8 +55,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E5%A4%A7%E9%99%86?page=1",
-      "started_at": "2026-11-28T08:41:49.661178+00:00",
-      "finished_at": "2026-11-28T08:41:49.823462+00:00"
+      "started_at": "2026-11-28T09:30:21.918626+00:00",
+      "finished_at": "2026-11-28T09:30:22.116208+00:00"
     },
     "fangsung:欧美": {
       "category": "fangsung:欧美",
@@ -74,8 +74,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E6%AC%A7%E7%BE%8E?page=1",
-      "started_at": "2026-11-28T08:41:46.457022+00:00",
-      "finished_at": "2026-11-28T08:41:46.616205+00:00"
+      "started_at": "2026-11-28T09:30:18.085460+00:00",
+      "finished_at": "2026-11-28T09:30:18.284086+00:00"
     },
     "fangsung:泰国": {
       "category": "fangsung:泰国",
@@ -93,8 +93,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E6%B3%B0%E5%9B%BD?page=1",
-      "started_at": "2026-11-28T08:41:48.374252+00:00",
-      "finished_at": "2026-11-28T08:41:48.544648+00:00"
+      "started_at": "2026-11-28T09:30:20.290345+00:00",
+      "finished_at": "2026-11-28T09:30:20.487972+00:00"
     },
     "fangsung:越南": {
       "category": "fangsung:越南",
@@ -112,8 +112,8 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E8%B6%8A%E5%8D%97?page=1",
-      "started_at": "2026-11-28T08:41:49.019475+00:00",
-      "finished_at": "2026-11-28T08:41:49.181033+00:00"
+      "started_at": "2026-11-28T09:30:21.092595+00:00",
+      "finished_at": "2026-11-28T09:30:21.296266+00:00"
     },
     "fangsung:韩国": {
       "category": "fangsung:韩国",
@@ -131,16 +131,16 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E9%9F%A9%E5%9B%BD?page=1",
-      "started_at": "2026-11-28T08:41:47.076253+00:00",
-      "finished_at": "2026-11-28T08:41:47.219035+00:00"
+      "started_at": "2026-11-28T09:30:18.957891+00:00",
+      "finished_at": "2026-11-28T09:30:19.157801+00:00"
     },
     "fangsung:香港": {
       "category": "fangsung:香港",
-      "mode": "resume",
+      "mode": "new_only",
       "status": "completed",
-      "start_page": 3,
-      "end_page": 3,
-      "current_page": 2,
+      "start_page": 1,
+      "end_page": 1,
+      "current_page": 0,
       "pages_crawled": 0,
       "items_found": 0,
       "items_new": 0,
@@ -149,9 +149,9 @@
       "skipped_unresolved": 0,
       "upserted": 0,
       "errors": 1,
-      "last_error": "listing unavailable on page 3: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E9%A6%99%E6%B8%AF?page=3",
-      "started_at": "2026-11-28T08:41:47.764683+00:00",
-      "finished_at": "2026-11-28T08:41:47.913982+00:00"
+      "last_error": "listing unavailable on page 1: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E9%A6%99%E6%B8%AF?page=1",
+      "started_at": "2026-11-28T09:30:19.468850+00:00",
+      "finished_at": "2026-11-28T09:30:19.671345+00:00"
     },
     "fangsung:中国AV": {
       "category": "fangsung:中国AV",
@@ -169,27 +169,27 @@
       "upserted": 0,
       "errors": 1,
       "last_error": "listing unavailable on page 10: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E4%B8%AD%E5%9B%BDAV?page=10",
-      "started_at": "2026-11-28T08:41:45.023681+00:00",
-      "finished_at": "2026-11-28T08:41:45.315246+00:00"
+      "started_at": "2026-11-28T09:30:16.434040+00:00",
+      "finished_at": "2026-11-28T09:30:16.643389+00:00"
     },
     "fangsung:日本AV": {
       "category": "fangsung:日本AV",
       "mode": "resume",
       "status": "completed",
-      "start_page": 1,
-      "end_page": 1,
-      "current_page": 0,
-      "pages_crawled": 1,
-      "items_found": 20,
+      "start_page": 2,
+      "end_page": 2,
+      "current_page": 1,
+      "pages_crawled": 0,
+      "items_found": 0,
       "items_new": 0,
-      "skipped_known": 20,
+      "skipped_known": 0,
       "skipped_dead": 0,
       "skipped_unresolved": 0,
       "upserted": 0,
-      "errors": 0,
-      "last_error": null,
-      "started_at": "2026-11-28T08:41:42.342496+00:00",
-      "finished_at": "2026-11-28T08:41:43.218503+00:00"
+      "errors": 1,
+      "last_error": "listing unavailable on page 2: HTTP error on https://www.fangsung.com/a%E7%89%87/search/%E6%97%A5%E6%9C%ACAV?page=2",
+      "started_at": "2026-11-28T09:30:14.654635+00:00",
+      "finished_at": "2026-11-28T09:30:14.963558+00:00"
     }
   },
   "started_at": "2026-11-25T13:52:42.800733+00:00",
@@ -206,10 +206,10 @@
     "越南",
     "大陆"
   ],
-  "updated_at": "2026-11-28T08:41:50.109308+00:00",
-  "finished_at": "2026-11-28T08:41:50Z",
+  "updated_at": "2026-11-28T09:30:22.591692+00:00",
+  "finished_at": "2026-11-28T09:30:22Z",
   "totals": {
-    "upserted": 2
+    "upserted": 0
   },
   "failed_sites": [],
   "degraded_sites": []

@@ -1,11 +1,11 @@
 {
   "influencersgonewild": {
-    "max_pages": 422,
-    "current_page": 422
+    "max_pages": 423,
+    "current_page": 423
   },
   "sheeshfans": {
     "max_pages": 793,
-    "current_page": 422
+    "current_page": 423
   },
   "borntobefuck": {
     "max_pages": 80,
@@ -17,5 +17,5 @@
   },
   "total_ingested": 0,
   "total_merged": 0,
-  "timestamp": "2026-11-28 08:34:28"
+  "timestamp": "2026-11-28 09:26:36"
 }

@@ -2,8 +2,8 @@
   "status": "completed",
   "site": "samusar",
   "started_at": "2026-11-26T08:27:17.642375+00:00",
-  "updated_at": "2026-11-28T08:33:23.958157+00:00",
-  "current_page": 19,
+  "updated_at": "2026-11-28T09:25:23.632115+00:00",
+  "current_page": 20,
   "pages_crawled": 1,
   "items_found": 24,
   "upserted": 24,
@@ -11,6 +11,6 @@
   "skipped_unresolved": 0,
   "errors": 0,
   "last_error": null,
-  "finished_at": "2026-11-28T08:33:23.958139+00:00",
-  "total_ingested": 406
+  "finished_at": "2026-11-28T09:25:23.632093+00:00",
+  "total_ingested": 430
 }

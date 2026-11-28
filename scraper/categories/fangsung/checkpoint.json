@@ -3,7 +3,7 @@
   "fangsung:日本AV": {
     "max_pages": 360,
     "current_page": 2,
-    "remaining_pages": 50
+    "remaining_pages": 359
   },
   "fangsung:台湾": {
     "max_pages": 249,
@@ -31,9 +31,9 @@
     "remaining_pages": 50
   },
   "fangsung:香港": {
-    "max_pages": 50,
+    "max_pages": 2,
     "current_page": 3,
-    "remaining_pages": 49
+    "remaining_pages": 48
   },
   "fangsung:泰国": {
     "max_pages": 50,
@@ -50,5 +50,5 @@
     "current_page": 1,
     "remaining_pages": 50
   },
-  "timestamp": "2026-11-28 08:41:49"
+  "timestamp": "2026-11-28 09:30:22"
 }

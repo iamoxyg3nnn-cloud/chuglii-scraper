@@ -382,6 +382,12 @@ def run_japanese_jav_sync(
         return (not unresolved), unresolved
 
     for cat in JAV_CATEGORIES:
+        if budget.expired(deadline):
+            # Each SupJav category costs a head page plus a cursor page, and
+            # every item verifies its mirrors: without this check one category
+            # kept running long after the feed budget was gone.
+            log(f"  [BUDGET] Japanese JAV feed deadline reached; [{cat}] and later categories resume next cycle.")
+            break
         log(f"\n  Checking category: [{cat}]")
         try:
             cat_state = checkpoint.setdefault("categories", {}).setdefault(

@@ -42,7 +42,15 @@ _cache_dirty = False
 # (5,492 rows with no title_en were sitting in chinese_videos because of it).
 _FAIL_STREAK_LIMIT = 5
 _fail_streak = 0
-_endpoint_down = False
+#: A *rate limit* is transient. This used to be a permanent boolean, so once the
+#: free endpoint throttled us the remaining titles were skipped for the whole
+#: session (run 46114735791: 697 translated, 767 given up on). The breaker now
+#: cools down and retries instead of latching off.
+_endpoint_down_until = 0.0
+_COOLDOWN_BASE = float(__import__("os").environ.get("SCRAPER_TRANSLATE_COOLDOWN", "60"))
+_COOLDOWN_MAX = 300.0
+_MIN_INTERVAL = float(__import__("os").environ.get("SCRAPER_TRANSLATE_INTERVAL", "0.15"))
+_last_request_at = 0.0
 
 
 def _load_cache() -> None:
@@ -93,9 +101,14 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
     if text in _cache:
         return _cache[text]
 
-    global _fail_streak, _endpoint_down
-    if _endpoint_down:
-        return None
+    global _fail_streak, _endpoint_down_until, _last_request_at
+    now = time.time()
+    if now < _endpoint_down_until:
+        return None                       # cooling down, not giving up
+    if _MIN_INTERVAL > 0:
+        wait = (_last_request_at + _MIN_INTERVAL) - now
+        if wait > 0:
+            time.sleep(wait)
 
     url = _TRANSLATE_URL + urllib.parse.quote(text[:450])
     for attempt in range(retries):
@@ -110,9 +123,11 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
                     )
                 },
             )
+            _last_request_at = time.time()
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
             _fail_streak = 0
+            _endpoint_down_until = 0.0    # the endpoint is healthy again
             # dj=1 response: {"sentences": [{"trans": "...", ...}, ...], ...}
             sentences = payload.get("sentences") or []
             translated = "".join(
@@ -131,13 +146,15 @@ def translate_to_en(text: str, retries: int = _MAX_RETRIES) -> Optional[str]:
             if attempt < retries - 1:
                 time.sleep(0.8 * (attempt + 1))
 
-    # Transport failure: DO NOT cache. The title stays eligible for the next
-    # run instead of being permanently marked untranslatable.
+    # Transport failure / rate limit: DO NOT cache. The title stays eligible for
+    # the next run instead of being permanently marked untranslatable.
     _fail_streak += 1
     if _fail_streak >= _FAIL_STREAK_LIMIT:
-        _endpoint_down = True
+        cool = min(_COOLDOWN_MAX, _COOLDOWN_BASE * (2 ** max(0, _fail_streak - _FAIL_STREAK_LIMIT)))
+        _endpoint_down_until = time.time() + cool
+        _fail_streak = 0
         print(
-            f"    [!] Translation endpoint unreachable after {_fail_streak} attempts; "
-            "skipping further translations this session (titles stay queued)."
+            f"    [!] Translation endpoint throttled; cooling down {int(cool)}s "
+            "(titles stay queued, nothing is marked untranslatable)."
         )
     return None

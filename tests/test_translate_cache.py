@@ -26,7 +26,8 @@ def clean_state(monkeypatch, tmp_path):
     monkeypatch.setattr(tr, "_cache_loaded", True)
     monkeypatch.setattr(tr, "_cache_dirty", False)
     monkeypatch.setattr(tr, "_fail_streak", 0)
-    monkeypatch.setattr(tr, "_endpoint_down", False)
+    monkeypatch.setattr(tr, "_endpoint_down_until", 0.0)
+    monkeypatch.setattr(tr, "_last_request_at", 0.0)
     monkeypatch.setattr(tr.time, "sleep", lambda s: None)
     yield
 
@@ -65,12 +66,35 @@ def test_transport_failure_is_retried_next_session(monkeypatch):
     assert calls, "the title was never re-sent after a transient failure"
 
 
-def test_endpoint_circuit_breaker_stops_the_stampede(monkeypatch):
+def test_endpoint_circuit_breaker_cools_down_then_retries(monkeypatch):
+    """A rate limit is transient: cool down, then keep translating.
+
+    Run 46114735791 translated 697 titles and then gave up on the remaining 767
+    because the breaker was a permanent boolean. A throttled endpoint must not
+    turn into a lost backfill.
+    """
     monkeypatch.setattr(tr.urllib.request, "urlopen", _raising_urlopen)
     for i in range(tr._FAIL_STREAK_LIMIT):
         tr.translate_to_en(f"国产标题{i}")
-    assert tr._endpoint_down is True
-    assert tr.translate_to_en("另一个国产标题") is None
+    assert tr._endpoint_down_until > 0, "the breaker must pause, not latch off"
+    assert tr.translate_to_en("冷却中的标题") is None
+
+    # Past the cooldown window the endpoint is tried again and recovers.
+    monkeypatch.setattr(tr, "_endpoint_down_until", 0.0)
+
+    class Resp:
+        def read(self):
+            return b'{"sentences":[{"trans":"Recovered title"}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(tr.urllib.request, "urlopen", lambda *a, **k: Resp())
+    assert tr.translate_to_en("恢复标题") == "Recovered title"
+    assert tr._endpoint_down_until == 0.0, "a success must clear the cooldown"
 
 
 def test_empty_translation_is_cached_as_deterministic(monkeypatch):

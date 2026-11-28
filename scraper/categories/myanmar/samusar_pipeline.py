@@ -26,6 +26,7 @@ for p in [str(CURRENT_DIR), str(SCRAPER_DIR), str(PROJECT_ROOT)]:
         sys.path.insert(0, p)
 
 from samusar import enrich_and_polish_detail, scrape_listing  # noqa: E402
+from scraper import budget  # noqa: E402
 
 SITE_KEY = "samusar"
 CHECKPOINT_FILE = CURRENT_DIR / "samusar_checkpoint.json"
@@ -223,6 +224,7 @@ def run_pipeline(
     check_head: bool = True,
     dry_run: bool = False,
     workers: int = 4,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     state = load_checkpoint()
     known_ids = load_known_ids()
@@ -237,6 +239,13 @@ def run_pipeline(
 
     total_upserted = 0
     failed = False
+
+    if budget.expired(deadline):
+        progress["status"] = "partial"
+        if not dry_run:
+            save_progress(progress)
+        print("  [BUDGET] Samusar feed deadline reached before its pages; resuming next cycle.")
+        return {"status": "partial", "upserted": 0}
 
     if check_head:
         head_res = run_samusar_crawl(

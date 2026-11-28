@@ -133,3 +133,46 @@ def test_a_failed_feed_is_isolated(cycle_env, monkeypatch):
     assert unified.FEED_STATUS.get("chinese") == "failed"
     # Everything after the failing feed still ran.
     assert "studios" in calls
+
+
+def test_every_callee_the_cycle_hands_a_deadline_accepts_one():
+    """Pins the call contract.
+
+    The first post-fix production run (46114735791) failed the samusar feed with
+    ``run_pipeline() got an unexpected keyword argument 'deadline'``: the cycle
+    hands every runner a deadline, so every runner (and every crawl it forwards
+    it to) must accept one.
+    """
+    import importlib
+    import inspect
+
+    runners = {
+        "viral-mms": unified.run_viral_mms_sync,
+        "viral-mms-sites": unified.run_viral_mms_sites_sync,
+        "supjav": unified.run_japanese_jav_sync,
+        "myanmar": unified.run_myanmar_sync,
+        "samusar": unified.run_samusar_sync,
+        "onlyfans": unified.run_onlyfans_sync,
+        "voyeurhouse": unified.run_voyeurhouse_sync,
+        "chinese": unified.run_chinese_sync,
+        "fangsung": unified.run_fangsung_sync,
+        "studios": unified.run_studios_sync,
+    }
+    for name, fn in runners.items():
+        assert "deadline" in inspect.signature(fn).parameters, name
+
+    crawls = {
+        "scraper.categories.chinese.pipeline:run_category_crawl",
+        "scraper.categories.fangsung.pipeline:run_category_crawl",
+        "scraper.categories.studios.pipeline:run_category_crawl",
+        "scraper.categories.onlyfans.pipeline:run_site_crawl",
+        "scraper.categories.voyeurhouse.pipeline:run_site_crawl",
+        "scraper.categories.viral-mms.sites_pipeline:run_site_crawl",
+        "scraper.categories.viral-mms.sites_pipeline:run_multi_site_pipeline",
+        "scraper.categories.myanmar.samusar_pipeline:run_pipeline",
+    }
+    for ref in crawls:
+        mod_name, func_name = ref.split(":")
+        mod = importlib.import_module(mod_name)
+        fn = getattr(mod, func_name)
+        assert "deadline" in inspect.signature(fn).parameters, ref

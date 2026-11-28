@@ -3,38 +3,38 @@
   "uxj838238:20110496": {
     "max_pages": 912,
     "stall_count": 0,
-    "current_page": 27,
-    "remaining_pages": 887
+    "current_page": 28,
+    "remaining_pages": 886
   },
   "uxj838238:20030496": {
     "max_pages": 555,
     "stall_count": 0,
     "current_page": 25,
-    "remaining_pages": 532
+    "remaining_pages": 531
   },
   "uxj838238:20040496": {
     "max_pages": 835,
     "stall_count": 0,
     "current_page": 25,
-    "remaining_pages": 812
+    "remaining_pages": 811
   },
   "uxj838238:20050496": {
     "max_pages": 1581,
     "stall_count": 0,
     "current_page": 24,
-    "remaining_pages": 1559
+    "remaining_pages": 1558
   },
   "uxj838238:20090496": {
     "max_pages": 1956,
     "stall_count": 0,
     "current_page": 24,
-    "remaining_pages": 1934
+    "remaining_pages": 1933
   },
   "uxj838238:20100496": {
     "max_pages": 185,
     "stall_count": 0,
     "current_page": 22,
-    "remaining_pages": 165
+    "remaining_pages": 164
   },
   "uxj838238:20060496": {
     "max_pages": 68,
@@ -59,8 +59,8 @@
   },
   "uxj838238:20020496": {
     "max_pages": 83,
-    "current_page": 21,
-    "remaining_pages": 65
+    "current_page": 22,
+    "remaining_pages": 63
   },
   "uxj838238:20140496": {
     "max_pages": 22,
@@ -236,5 +236,5 @@
     "max_pages": 50,
     "current_page": 1
   },
-  "timestamp": "2026-11-28 07:17:44"
+  "timestamp": "2026-11-28 08:00:21"
 }

@@ -17,27 +17,27 @@
       "upserted": 0,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-28T07:10:02.517532+00:00",
-      "finished_at": "2026-11-28T07:10:05.957723+00:00"
+      "started_at": "2026-11-28T07:49:28.531101+00:00",
+      "finished_at": "2026-11-28T07:49:29.268892+00:00"
     },
     "sheeshfans": {
       "site": "sheeshfans",
       "mode": "resume",
       "status": "completed",
-      "start_page": 418,
-      "end_page": 418,
-      "current_page": 418,
+      "start_page": 419,
+      "end_page": 419,
+      "current_page": 419,
       "pages_crawled": 1,
       "items_found": 20,
-      "items_new": 20,
+      "items_new": 7,
       "items_merged": 0,
-      "skipped_known": 0,
+      "skipped_known": 13,
       "skipped_unresolved": 0,
-      "upserted": 20,
+      "upserted": 7,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-28T07:09:33.324253+00:00",
-      "finished_at": "2026-11-28T07:09:50.597188+00:00"
+      "started_at": "2026-11-28T07:49:07.323081+00:00",
+      "finished_at": "2026-11-28T07:49:17.607732+00:00"
     },
     "borntobefuck": {
       "site": "borntobefuck",
@@ -55,27 +55,27 @@
       "upserted": 0,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-28T07:10:12.473806+00:00",
-      "finished_at": "2026-11-28T07:10:18.681340+00:00"
+      "started_at": "2026-11-28T07:49:35.661345+00:00",
+      "finished_at": "2026-11-28T07:49:41.954032+00:00"
     },
     "influencersgonewild": {
       "site": "influencersgonewild",
       "mode": "resume",
       "status": "completed",
-      "start_page": 418,
-      "end_page": 418,
-      "current_page": 418,
+      "start_page": 419,
+      "end_page": 419,
+      "current_page": 419,
       "pages_crawled": 1,
       "items_found": 14,
-      "items_new": 10,
+      "items_new": 9,
       "items_merged": 0,
       "skipped_known": 0,
-      "skipped_unresolved": 0,
-      "upserted": 10,
+      "skipped_unresolved": 1,
+      "upserted": 9,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-28T07:09:12.675546+00:00",
-      "finished_at": "2026-11-28T07:09:31.770229+00:00"
+      "started_at": "2026-11-28T07:48:48.743275+00:00",
+      "finished_at": "2026-11-28T07:49:05.960946+00:00"
     }
   },
   "started_at": "2026-11-23T18:25:28.119231+00:00",
@@ -88,10 +88,10 @@
   ],
   "pages_per_site": 1,
   "dry_run": true,
-  "updated_at": "2026-11-28T07:10:19.050264+00:00",
-  "finished_at": "2026-11-28T07:10:19Z",
+  "updated_at": "2026-11-28T07:49:42.272071+00:00",
+  "finished_at": "2026-11-28T07:49:42Z",
   "totals": {
-    "upserted": 30
+    "upserted": 16
   },
   "failed_sites": [],
   "degraded_sites": []

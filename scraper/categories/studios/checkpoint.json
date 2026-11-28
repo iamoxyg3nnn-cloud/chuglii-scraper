@@ -2,15 +2,15 @@
   "total_ingested": 0,
   "madouer:1": {
     "max_pages": 1163,
-    "current_page": 14
+    "current_page": 15
   },
   "madouer:3": {
     "max_pages": 962,
-    "current_page": 13
+    "current_page": 14
   },
   "madouer:4": {
-    "max_pages": 281,
-    "current_page": 13
+    "max_pages": 282,
+    "current_page": 14
   },
   "madouer:5": {
     "max_pages": 2357,
@@ -712,5 +712,5 @@
     "max_pages": 4097,
     "current_page": 4
   },
-  "timestamp": "2026-11-27 12:47:27"
+  "timestamp": "2026-11-28 08:46:01"
 }

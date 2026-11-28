@@ -66,6 +66,11 @@ PROXY_SOURCES: List[str] = [
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
     "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
     "https://openproxylist.xyz/http.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://proxyspace.pro/http.txt",
+    "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt",
     # JSON
     "https://proxylist.geonode.com/api/proxy-list?limit=200&page=1&sort_by=lastChecked&sort_type=desc&protocols=http,https",
 ]
@@ -81,14 +86,25 @@ DEFAULT_TARGETS: List[str] = [
 ]
 
 MIN_POOL = int(os.environ.get("SCRAPER_PROXY_MIN_POOL", "6"))
-HARVEST_CANDIDATES = int(os.environ.get("SCRAPER_PROXY_CANDIDATES", "250"))
-PROBE_WORKERS = int(os.environ.get("SCRAPER_PROXY_PROBE_WORKERS", "50"))
-PROBE_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_PROBE_TIMEOUT", "8"))
-PROBE_BUDGET_SEC = float(os.environ.get("SCRAPER_PROXY_PROBE_BUDGET", "75"))
+# A global pool is the wrong unit: a proxy validated against madouhd.cc is not a
+# proxy for uxj.838238.xyz, and the old "stop once 6 proxies exist anywhere"
+# rule left the Chinese origin with one or two. Coverage is now per origin.
+MIN_PER_HOST = int(os.environ.get("SCRAPER_PROXY_MIN_PER_HOST", "5"))
+# Free proxies that survive a real origin are roughly 1 in 10 (measured: 60/600
+# for uxj.838238.xyz), so candidates and workers both need room.
+HARVEST_CANDIDATES = int(os.environ.get("SCRAPER_PROXY_CANDIDATES", "600"))
+PROBE_WORKERS = int(os.environ.get("SCRAPER_PROXY_PROBE_WORKERS", "80"))
+PROBE_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_PROBE_TIMEOUT", "12"))
+PROBE_BUDGET_SEC = float(os.environ.get("SCRAPER_PROXY_PROBE_BUDGET", "150"))
+# At a ~10% admission rate, oversubscribe each origin's deficit this much.
+PROBE_OVERSUBSCRIBE = int(os.environ.get("SCRAPER_PROXY_OVERSUBSCRIBE", "20"))
 REFRESH_INTERVAL_SEC = float(os.environ.get("SCRAPER_PROXY_REFRESH_SEC", "600"))   # 10 min
 HEALTH_INTERVAL_SEC = float(os.environ.get("SCRAPER_PROXY_HEALTH_SEC", "180"))     # 3 min
 PROXY_TTL_SEC = float(os.environ.get("SCRAPER_PROXY_TTL_SEC", "1800"))             # 30 min
 MAX_EVICT_SCORE = 2
+# A host-specific failure is remembered separately: it says nothing about the
+# proxy's life, only that it cannot serve that origin.
+HOST_FAIL_LIMIT = 2
 ENABLED = os.environ.get("SCRAPER_PROXY_FALLBACK", "1") not in ("0", "false", "False", "")
 
 STATE_KEY = "proxy_pool_v1"
@@ -169,6 +185,7 @@ class AutoProxyPool:
         self._start_lock = threading.Lock()
         self._stop = threading.Event()
         self._refresh_now = threading.Event()
+        self._focus_host = ""            # set by ensure_for_host()
 
         self.last_refresh_at: float = 0.0
         self.stats: Dict[str, int] = {
@@ -232,13 +249,56 @@ class AutoProxyPool:
                 self._save_state()
             except Exception as exc:                      # never kill the thread
                 print(f"[proxy] manager error: {type(exc).__name__}: {exc}")
-            self._stop.wait(HEALTH_INTERVAL_SEC if self.pool_size() >= self.min_pool else 15)
+            # Wake promptly when a feed asks for an origin it has no route to,
+            # instead of sitting out the full health interval.
+            interval = HEALTH_INTERVAL_SEC if self.pool_size() >= self.min_pool else 15
+            until = time.time() + interval
+            while not self._stop.is_set() and time.time() < until and not self._refresh_now.is_set():
+                self._stop.wait(1.0)
 
     # ── pool state ────────────────────────────────────────────────────────
 
     def pool_size(self) -> int:
         with self._lock:
             return sum(1 for e in self._entries.values() if e.get("ok", 0) >= 1)
+
+    def affinity_count(self, host: str) -> int:
+        """Fresh proxies that were actually validated against ``host``."""
+        host = host.lower()
+        with self._lock:
+            return sum(
+                1
+                for e in self._entries.values()
+                if e.get("ok", 0) >= 1
+                and self._fresh(e, host)
+                and int((e.get("hosts_fail") or {}).get(host, 0)) < HOST_FAIL_LIMIT
+            )
+
+    def hosts_needing_proxies(self, targets: Iterable[str]) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for t in targets:
+            h = self._host_of(t)
+            if not h:
+                continue
+            out[h] = max(0, MIN_PER_HOST - self.affinity_count(h))
+        return out
+
+    def ensure_for_host(self, url_or_host: str) -> bool:
+        """Ask the manager to harvest for one origin, without blocking.
+
+        Called by ``net`` the moment a host has no validated route: the next
+        fetch for that host then has real candidates instead of a madouhd proxy
+        that will fail. Returns True when coverage is already sufficient.
+        """
+        host = self._host_of(url_or_host) if "://" in (url_or_host or "") else (url_or_host or "").lower()
+        if not host or not ENABLED:
+            return False
+        if self.affinity_count(host) >= MIN_PER_HOST:
+            return True
+        self._focus_host = host
+        self._refresh_now.set()
+        self.ensure_started()
+        return False
 
     def _host_of(self, url: str) -> str:
         m = _RE_HOST.match(url or "")
@@ -252,9 +312,16 @@ class AutoProxyPool:
             return bool(ts) and now - ts <= PROXY_TTL_SEC
         return bool(entry.get("last_ok")) and now - entry["last_ok"] <= PROXY_TTL_SEC
 
-    def _pick(self, host: str) -> Optional[str]:
+    def _pick(self, host: str, exclude: Optional[Iterable[str]] = None) -> Optional[str]:
+        skip = set(exclude or ())
         with self._lock:
-            healthy = {p: e for p, e in self._entries.items() if e.get("ok", 0) >= 1}
+            healthy = {
+                p: e
+                for p, e in self._entries.items()
+                if e.get("ok", 0) >= 1
+                and p not in skip
+                and int((e.get("hosts_fail") or {}).get(host, 0)) < HOST_FAIL_LIMIT
+            }
         if not healthy:
             return None
         affine = [p for p, e in healthy.items() if host and self._fresh(e, host)]
@@ -265,7 +332,13 @@ class AutoProxyPool:
         pool.sort(key=lambda p: healthy[p].get("last_ok", 0))
         return pool[0]
 
-    def get_proxy(self, target_url: Optional[str] = None, *, rotate: bool = False) -> Optional[str]:
+    def get_proxy(
+        self,
+        target_url: Optional[str] = None,
+        *,
+        rotate: bool = False,
+        exclude: Optional[Iterable[str]] = None,
+    ) -> Optional[str]:
         """A proxy for ``target_url`` or None. Never blocks on the network.
 
         An operator-supplied proxy (``SCRAPER_PROXY_URL``) always wins; the
@@ -282,10 +355,18 @@ class AutoProxyPool:
             return None
         self.ensure_started()
         host = self._host_of(target_url or self.target_url)
-        chosen = self._pick(host)
+        chosen = self._pick(host, exclude)
         if chosen and rotate:
+            skip = set(exclude or ())
             with self._lock:
-                choices = [p for p, e in self._entries.items() if e.get("ok", 0) >= 1 and self._fresh(e, host)]
+                choices = [
+                    p
+                    for p, e in self._entries.items()
+                    if e.get("ok", 0) >= 1
+                    and p not in skip
+                    and self._fresh(e, host)
+                    and int((e.get("hosts_fail") or {}).get(host, 0)) < HOST_FAIL_LIMIT
+                ]
             if choices:
                 chosen = random.choice(choices)
         return chosen
@@ -316,10 +397,20 @@ class AutoProxyPool:
             e = self._entries.get(key)
             if e is None:
                 return
-            e["fail"] = int(e.get("fail", 0)) + 1
+            # Keep the affinity stamp: it is the evidence that this proxy can
+            # serve this origin at all, which is what makes a later failure
+            # meaningful. hosts_fail is what removes it from this host's pool.
+            was_affine = bool(host) and host in (e.get("hosts") or {})
             if host:
-                (e.get("hosts") or {}).pop(host, None)
-            if e["fail"] >= MAX_EVICT_SCORE:
+                failed = e.setdefault("hosts_fail", {})
+                failed[host] = int(failed.get(host, 0)) + 1
+            # A proxy that cleared this origin and now fails it is dying. A proxy
+            # that only ever worked elsewhere says nothing about its health here:
+            # counting those evicted the whole pool every time a feed probed a
+            # host the proxy was never validated for.
+            if was_affine or len(e.get("hosts_fail") or {}) >= 3:
+                e["fail"] = int(e.get("fail", 0)) + 1
+            if int(e.get("fail", 0)) >= MAX_EVICT_SCORE:
                 self.stats["evicted"] += 1
                 self._dirty = True
                 del self._entries[key]
@@ -415,13 +506,29 @@ class AutoProxyPool:
             e["last_ok"] = time.time()
             e["latency"] = int((time.time() - started) * 1000)
             e["ok"] = max(1, int(e.get("ok", 0)))
+            (e.get("hosts_fail") or {}).pop(self._host_of(target), None)
         return proxy_url
 
     def refresh(self, targets: Optional[Iterable[str]] = None, max_probes: int = 0, workers: int = 0) -> int:
-        """Harvest + validate until the pool is topped up. Returns pool size."""
+        """Harvest + validate until every origin has its own working set.
+
+        Coverage is per origin: the budget goes to whichever target is furthest
+        from ``MIN_PER_HOST``, so a newly blocked site does not have to compete
+        with origins that already have proxies.
+        """
         target_list = [t for t in (targets or _targets_from_env()) if t]
+        if self._focus_host:
+            # The origin that is currently failing goes first and takes the
+            # whole probe budget when it has nothing.
+            target_list.sort(key=lambda t: 0 if self._host_of(t) == self._focus_host else 1)
         self.last_refresh_at = time.time()
         self.stats["refreshes"] += 1
+
+        needs = self.hosts_needing_proxies(target_list)
+        if not any(needs.values()) and self.pool_size() >= MIN_POOL:
+            self._focus_host = ""
+            return self.pool_size()
+
         candidates = self.harvest_candidates(max_probes or HARVEST_CANDIDATES)
         if not candidates:
             print("[proxy] no candidates harvested this round")
@@ -429,36 +536,52 @@ class AutoProxyPool:
 
         with self._lock:
             known = set(self._entries)
-        # Re-validate stale entries too, so the pool heals itself.
-        todo = [c for c in candidates if c not in known]
+        todo = [c for c in candidates if c not in known or c in self._entries]
         random.shuffle(todo)
-        need = max(0, self.min_pool - self.pool_size())
-        budget = max(5, min(len(todo), (max_probes or HARVEST_CANDIDATES)))
-        todo = todo[: max(budget, need * 20)]
 
-        print(f"[proxy] validating {len(todo)} candidates against {len(target_list)} target(s)...")
+        total_deficit = sum(needs.values())
+        budget = max(40, min(len(todo), total_deficit * PROBE_OVERSUBSCRIBE))
+        if max_probes and budget > max_probes:
+            budget = max_probes
+        todo = todo[:budget]
+
+        # Allocate probes to the biggest deficit first, round-robin.
+        remaining = {t: max(1, needs.get(self._host_of(t), 0)) for t in target_list}
+        plan: List[Tuple[str, str]] = []
+        for cand in todo:
+            target = max(remaining, key=lambda t: remaining[t])
+            priority = remaining[target]
+            plan.append((cand, target))
+            remaining[target] = max(0, priority - 1)
+            if remaining[target] == 0:
+                # Re-arm so the tail of the budget keeps topping the same origin
+                # up rather than drifting to one that is already satisfied.
+                remaining[target] = max(1, needs.get(self._host_of(target), 0))
+
+        print(
+            f"[proxy] validating {len(plan)} candidates for "
+            f"{', '.join(f'{h}:{n}' for h, n in sorted(needs.items()) if n) or 'pool floor'}..."
+        )
         found = 0
+        per_host: Dict[str, int] = {}
         executor = ThreadPoolExecutor(max_workers=workers or PROBE_WORKERS)
         try:
-            futures = {}
-            for i, cand in enumerate(todo):
-                # Spread candidates over targets so one host's coverage does not
-                # starve the others; the first target is the most blocked one.
-                target = target_list[i % len(target_list)]
-                futures[executor.submit(self._probe_proxy, cand, target)] = (cand, target)
+            futures = {executor.submit(self._probe_proxy, cand, target): (cand, target) for cand, target in plan}
             deadline = time.time() + PROBE_BUDGET_SEC
             for fut in as_completed(futures, timeout=max(1.0, deadline - time.time())):
                 self.stats["probed"] += 1
-                ok = fut.result()
+                try:
+                    ok = fut.result()
+                except Exception:
+                    ok = None
+                cand, target = futures[fut]
                 if ok:
-                    # Register here too: the probe already does it, but keeping
-                    # the bookkeeping in refresh() means a stubbed/alternate
-                    # prober cannot leave the pool empty after a successful
-                    # validation round.
-                    self.report_success(ok, futures[fut][1])
-                    found += 1
+                    self.report_success(ok, target)
                     self.stats["added"] += 1
-                    if self.pool_size() >= self.min_pool:
+                    found += 1
+                    h = self._host_of(target)
+                    per_host[h] = per_host.get(h, 0) + 1
+                    if self._all_satisfied(target_list):
                         break
         except Exception as exc:
             if type(exc).__name__ == "TimeoutError":
@@ -474,7 +597,12 @@ class AutoProxyPool:
             f"[proxy] pool={size}/{self.min_pool} (+{found} new) | "
             f"probed={self.stats['probed']} | coverage={cover or '-'}"
         )
+        if self._all_satisfied(target_list):
+            self._focus_host = ""
         return size
+
+    def _all_satisfied(self, targets: Iterable[str]) -> bool:
+        return all(self.affinity_count(self._host_of(t)) >= MIN_PER_HOST for t in targets if self._host_of(t))
 
     # Kept for compatibility with older callers.
     def refresh_pool(self, max_probes: int = 150, workers: int = 35, target_url: Optional[str] = None) -> int:
@@ -518,6 +646,7 @@ class AutoProxyPool:
                 "proxies": {
                     p: {
                         "hosts": (e.get("hosts") or {}),
+                        "hosts_fail": (e.get("hosts_fail") or {}),
                         "ok": int(e.get("ok", 0)),
                         "fail": int(e.get("fail", 0)),
                         "last_ok": e.get("last_ok", 0),
@@ -577,6 +706,7 @@ class AutoProxyPool:
                     continue                     # too old to trust
                 self._entries[normalised] = {
                     "hosts": {str(h): float(ts) for h, ts in (e.get("hosts") or {}).items()},
+                    "hosts_fail": {str(h): int(n) for h, n in (e.get("hosts_fail") or {}).items()},
                     "ok": int(e.get("ok") or 1),
                     "fail": 0,
                     "last_ok": last_ok,
@@ -607,5 +737,6 @@ def status() -> Dict[str, Any]:
         "pool": pool.pool_size(),
         "min_pool": pool.min_pool,
         "coverage": pool._coverage(),
+        "per_host": pool.hosts_needing_proxies(_targets_from_env()),
         "stats": dict(pool.stats),
     }

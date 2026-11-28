@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scraper import proxy_pool  # noqa: E402
+from scraper import proxy_pool as pp  # noqa: E402
 from scraper.proxy_pool import AutoProxyPool  # noqa: E402
 
 
@@ -154,3 +155,97 @@ def test_ensure_started_respects_the_kill_switch(monkeypatch):
     pool = AutoProxyPool()
     assert pool.ensure_started(["https://a.test/"]) is False
     assert pool.get_proxy("https://a.test/") is None
+
+
+# ── per-origin coverage (free-proxy harvesting for a blocked origin) ────────
+
+def test_coverage_is_counted_per_origin_not_globally(monkeypatch):
+    """Six proxies for madouhd must not be mistaken for coverage of uxj.
+
+    Run 46125781105 still skipped the Chinese feed with
+    ``pool=6/6 ... coverage=madouhd.cc:3, uxj.838238.xyz:2``: the global floor
+    was met, so the harvest stopped even though one origin had two routes.
+    """
+    pool = AutoProxyPool()
+    pool.ensure_started = lambda *a, **k: True
+    for i in range(6):
+        pool.report_success(f"http://10.0.0.{i}:80", "https://madouhd.cc/category/cate3/")
+
+    monkeypatch.setattr(pp, "MIN_PER_HOST", 5)
+    needs = pool.hosts_needing_proxies(
+        ["https://madouhd.cc/category/cate3/", "https://uxj.838238.xyz/"]
+    )
+    assert needs["madouhd.cc"] == 0
+    assert needs["uxj.838238.xyz"] == 5
+    assert pool.affinity_count("uxj.838238.xyz") == 0
+
+
+def test_refresh_spends_its_budget_on_the_origin_that_has_nothing(monkeypatch):
+    """Candidates go to the unfilled origin, not round-robin over five targets."""
+    pool = AutoProxyPool()
+    probed = []
+
+    def fake_probe(proxy, target=None):
+        probed.append(target)
+        return None
+
+    monkeypatch.setattr(pool, "_probe_proxy", fake_probe)
+    monkeypatch.setattr(pool, "harvest_candidates", lambda *a, **k: [f"http://10.1.0.{i}:80" for i in range(60)])
+    monkeypatch.setattr(pp, "MIN_PER_HOST", 3)
+    monkeypatch.setattr(pp, "PROBE_BUDGET_SEC", 5.0)
+    pool._focus_host = "uxj.838238.xyz"
+
+    pool.refresh(
+        targets=["https://madouhd.cc/category/cate3/", "https://uxj.838238.xyz/"],
+        max_probes=20,
+        workers=2,
+    )
+    assert probed, "refresh must probe something"
+    assert probed.count("https://uxj.838238.xyz/") > probed.count("https://madouhd.cc/category/cate3/")
+
+
+def test_a_host_specific_failure_does_not_kill_a_healthy_proxy():
+    """A madouhd proxy that cannot reach uxj is not dying — it is just not for uxj.
+
+    Counting those as ordinary failures evicted the whole pool every time a
+    newly blocked feed walked it, which is what produced
+    ``[!] No working proxy available for uxj.838238.xyz``.
+    """
+    pool = AutoProxyPool()
+    pool.report_success("http://5.5.5.5:80", "https://madouhd.cc/category/cate3/")
+
+    for _ in range(3):
+        pool.report_failure("http://5.5.5.5:80", "https://uxj.838238.xyz/")
+
+    assert pool.pool_size() == 1, "healthy for madouhd, so it must survive"
+    # …but it is no longer offered for the host that keeps rejecting it.
+    assert pool.get_proxy("https://uxj.838238.xyz/") != "http://5.5.5.5:80"
+    assert pool.get_proxy("https://madouhd.cc/category/cate9/") == "http://5.5.5.5:80"
+
+
+def test_get_proxy_never_repeats_an_excluded_proxy():
+    pool = AutoProxyPool()
+    pool.ensure_started = lambda *a, **k: True
+    pool.report_success("http://6.6.6.1:80", "https://uxj.838238.xyz/")
+    pool.report_success("http://6.6.6.2:80", "https://uxj.838238.xyz/")
+
+    first = pool.get_proxy("https://uxj.838238.xyz/")
+    second = pool.get_proxy("https://uxj.838238.xyz/", exclude={first})
+    assert second and second != first
+    assert pool.get_proxy("https://uxj.838238.xyz/", exclude={first, second}) is None
+
+
+def test_ensure_for_host_asks_for_a_harvest_without_blocking(monkeypatch):
+    pool = AutoProxyPool()
+    started = []
+    monkeypatch.setattr(pool, "ensure_started", lambda *a, **k: started.append(1) or True)
+    monkeypatch.setattr(pp, "MIN_PER_HOST", 5)
+
+    assert pool.ensure_for_host("https://uxj.838238.xyz/list/1.html") is False
+    assert pool._focus_host == "uxj.838238.xyz"
+    assert pool._refresh_now.is_set()
+    assert started, "the manager must be woken up"
+
+    for i in range(5):
+        pool.report_success(f"http://7.7.7.{i}:80", "https://uxj.838238.xyz/")
+    assert pool.ensure_for_host("https://uxj.838238.xyz/list/1.html") is True

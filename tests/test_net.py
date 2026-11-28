@@ -470,3 +470,41 @@ def test_host_down_short_circuits_concurrent_workers(monkeypatch):
     before = len(calls)
     net.fetch("https://gone.test/late", retries=1)
     assert len(calls) == before
+
+
+def test_blocked_host_tries_several_distinct_free_proxies(monkeypatch):
+    """Free proxies die constantly, so one fetch must walk a few of them.
+
+    The old ceiling of two attempts per fetch, combined with evicting a proxy
+    after two failures it could not be blamed for, is what left the Chinese feed
+    with no route at all.
+    """
+    monkeypatch.setattr(net, "_plain_get", lambda *a, **k: None)
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+    monkeypatch.setattr(net, "PROXY_TIMEOUT", 0.1)
+    monkeypatch.setattr(net, "PROXY_ATTEMPTS_PER_FETCH", 4)
+    monkeypatch.setattr(net, "HOST_MIN_INTERVAL", 0.0)
+
+    offered = [f"http://10.9.9.{i}:80" for i in range(10)]
+    asked = []
+
+    class Pool:
+        def get_proxy(self, target_url=None, rotate=False, exclude=None):
+            asked.append(set(exclude or ()))
+            left = [p for p in offered if p not in (exclude or set())]
+            return left[0] if left else None
+
+        def ensure_for_host(self, url):
+            return False
+
+        def report_failure(self, *a, **k):
+            pass
+
+        def report_success(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(net, "_proxy_pool", lambda: Pool())
+    assert net._proxy_get("https://uxj.838238.xyz/x", 5.0, None, None, "uxj.838238.xyz") is None
+    assert len(asked) == 4
+    # Every request excluded everything already tried, so no proxy is retried.
+    assert asked[-1] == set(offered[:3])

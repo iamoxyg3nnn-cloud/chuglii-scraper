@@ -82,6 +82,9 @@ CF_HOPELESS_COOLDOWN = float(os.environ.get("SCRAPER_CF_HOPELESS_COOLDOWN", "180
 # validated proxy (and through Scrapling's stealth browser for Cloudflare).
 PROXY_FALLBACK = os.environ.get("SCRAPER_PROXY_FALLBACK", "1") not in ("0", "false", "False", "")
 PROXY_TIMEOUT = float(os.environ.get("SCRAPER_PROXY_TIMEOUT", "20"))
+# Free proxies are cheap and fail often: try several distinct ones per fetch
+# instead of two, and never the same one twice.
+PROXY_ATTEMPTS_PER_FETCH = int(os.environ.get("SCRAPER_PROXY_ATTEMPTS", "4"))
 
 # Statuses a WAF/origin uses to reject the *client*, not to describe the URL.
 # 404/410 stay out of this set: those mean "gone" and are cached as dead.
@@ -848,16 +851,28 @@ def _proxy_get(
     if pool is None:
         return None
 
-    for attempt in range(2):
+    # Ask the manager for coverage of this origin if it has none: free-proxy
+    # harvesting is the only route available, and it takes ~90 s in the
+    # background, so start it before the retries rather than after them.
+    try:
+        pool.ensure_for_host(url)
+    except Exception:
+        pass
+
+    tried: set = set()
+    for attempt in range(PROXY_ATTEMPTS_PER_FETCH):
         try:
+            proxy = pool.get_proxy(target_url=url, rotate=attempt > 0, exclude=tried)
+        except TypeError:
             proxy = pool.get_proxy(target_url=url, rotate=attempt > 0)
         except Exception as exc:
             print(f"    [!] Proxy pool unavailable for {host}: {exc}")
             return None
         if not proxy:
-            if attempt == 0:
-                print(f"    [!] No working proxy available for {host}.")
+            print(f"    [!] No working proxy for {host} "
+                  f"({len(tried)} tried); harvesting for it in the background.")
             return None
+        tried.add(proxy)
 
         started = time.time()
         # PROXY_TIMEOUT, not max(timeout, PROXY_TIMEOUT): a blocked host must be
@@ -885,6 +900,11 @@ def _proxy_get(
             pass
         if page is None:
             _note_host_unreachable(host)      # no route answered: count it
+    print(f"    [-] All {len(tried)} proxies failed for {host}; asking for more.")
+    try:
+        pool.ensure_for_host(url)
+    except Exception:
+        pass
     return None
 
 

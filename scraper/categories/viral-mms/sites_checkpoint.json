@@ -2,12 +2,12 @@
   "spicymms": {
     "max_pages": 441,
     "stall_count": 0,
-    "current_page": 30
+    "current_page": 32
   },
   "desi49": {
     "max_pages": 460,
     "stall_count": 0,
-    "current_page": 30
+    "current_page": 32
   },
   "mydesi": {
     "max_pages": 60,
@@ -17,8 +17,8 @@
   "indianbfclips": {
     "max_pages": 1212,
     "stall_count": 0,
-    "current_page": 30
+    "current_page": 32
   },
-  "total_ingested": 3615,
-  "timestamp": "2026-11-28 09:23:03"
+  "total_ingested": 3694,
+  "timestamp": "2026-11-28 10:25:28"
 }

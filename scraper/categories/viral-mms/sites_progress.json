@@ -7,10 +7,10 @@
       "status": "completed",
       "upserted": 0,
       "last_error": null,
-      "finished_at": "2026-11-28T09:22:39.658267+00:00",
+      "finished_at": "2026-11-28T10:25:10.895208+00:00",
       "items_found": 56,
-      "current_page": 29,
-      "skipped_dead": 46,
+      "current_page": 31,
+      "skipped_dead": 56,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -20,7 +20,7 @@
       "status": "completed",
       "upserted": 28,
       "last_error": null,
-      "finished_at": "2026-11-28T09:22:49.004040+00:00",
+      "finished_at": "2026-11-28T10:25:19.502918+00:00",
       "items_found": 56,
       "current_page": 25,
       "skipped_dead": 28,
@@ -33,9 +33,9 @@
       "status": "completed",
       "upserted": 20,
       "last_error": null,
-      "finished_at": "2026-11-28T09:21:49.146860+00:00",
+      "finished_at": "2026-11-28T10:24:22.698693+00:00",
       "items_found": 20,
-      "current_page": 29,
+      "current_page": 31,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -46,9 +46,9 @@
       "status": "completed",
       "upserted": 20,
       "last_error": null,
-      "finished_at": "2026-11-28T09:23:02.903765+00:00",
+      "finished_at": "2026-11-28T10:25:28.698073+00:00",
       "items_found": 20,
-      "current_page": 29,
+      "current_page": 31,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -61,11 +61,11 @@
     "mydesi",
     "indianbfclips"
   ],
-  "updated_at": "2026-11-28T09:23:03.228794+00:00",
+  "updated_at": "2026-11-28T10:25:28.970901+00:00",
   "failed_sites": [],
   "degraded_sites": [],
-  "finished_at": "2026-11-28T09:23:03.228774+00:00",
+  "finished_at": "2026-11-28T10:25:28.970875+00:00",
   "totals": {
-    "upserted": 48
+    "upserted": 40
   }
 }

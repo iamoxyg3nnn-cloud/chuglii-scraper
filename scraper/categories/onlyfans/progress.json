@@ -1,5 +1,5 @@
 {
-  "status": "failed",
+  "status": "completed",
   "sites": {
     "uncutx": {
       "site": "uncutx",
@@ -17,54 +17,35 @@
       "upserted": 0,
       "errors": 0,
       "last_error": null,
-      "started_at": "2026-11-27T01:59:58.205820+00:00",
-      "finished_at": "2026-11-27T01:59:58.665496+00:00"
+      "started_at": "2026-11-28T06:18:31.915932+00:00",
+      "finished_at": "2026-11-28T06:18:32.644532+00:00"
     },
     "sheeshfans": {
       "site": "sheeshfans",
-      "mode": "new_only",
-      "status": "failed",
-      "start_page": 1,
-      "end_page": 1,
-      "current_page": 0,
-      "pages_crawled": 0,
-      "items_found": 0,
-      "items_new": 0,
+      "mode": "resume",
+      "status": "completed",
+      "start_page": 417,
+      "end_page": 417,
+      "current_page": 417,
+      "pages_crawled": 1,
+      "items_found": 20,
+      "items_new": 20,
       "items_merged": 0,
       "skipped_known": 0,
       "skipped_unresolved": 0,
-      "upserted": 0,
+      "upserted": 20,
       "errors": 0,
-      "last_error": "'Page' object has no attribute 'css'",
-      "started_at": "2026-11-27T01:59:55.859156+00:00",
-      "finished_at": null
+      "last_error": null,
+      "started_at": "2026-11-28T06:18:01.104503+00:00",
+      "finished_at": "2026-11-28T06:18:20.629724+00:00"
     },
     "borntobefuck": {
       "site": "borntobefuck",
       "mode": "resume",
       "status": "completed",
-      "start_page": 8,
-      "end_page": 8,
-      "current_page": 7,
-      "pages_crawled": 1,
-      "items_found": 12,
-      "items_new": 0,
-      "items_merged": 0,
-      "skipped_known": 12,
-      "skipped_unresolved": 0,
-      "upserted": 0,
-      "errors": 0,
-      "last_error": null,
-      "started_at": "2026-11-27T02:00:00.410686+00:00",
-      "finished_at": "2026-11-27T02:00:01.781187+00:00"
-    },
-    "influencersgonewild": {
-      "site": "influencersgonewild",
-      "mode": "new_only",
-      "status": "failed",
-      "start_page": 1,
-      "end_page": 1,
-      "current_page": 0,
+      "start_page": 13,
+      "end_page": 13,
+      "current_page": 12,
       "pages_crawled": 0,
       "items_found": 0,
       "items_new": 0,
@@ -73,9 +54,28 @@
       "skipped_unresolved": 0,
       "upserted": 0,
       "errors": 0,
-      "last_error": "'Page' object has no attribute 'css'",
-      "started_at": "2026-11-27T01:59:54.120510+00:00",
-      "finished_at": null
+      "last_error": null,
+      "started_at": "2026-11-28T06:18:39.185542+00:00",
+      "finished_at": "2026-11-28T06:18:45.364229+00:00"
+    },
+    "influencersgonewild": {
+      "site": "influencersgonewild",
+      "mode": "resume",
+      "status": "completed",
+      "start_page": 417,
+      "end_page": 417,
+      "current_page": 417,
+      "pages_crawled": 1,
+      "items_found": 14,
+      "items_new": 11,
+      "items_merged": 0,
+      "skipped_known": 2,
+      "skipped_unresolved": 0,
+      "upserted": 11,
+      "errors": 0,
+      "last_error": null,
+      "started_at": "2026-11-28T06:17:33.780777+00:00",
+      "finished_at": "2026-11-28T06:17:59.535922+00:00"
     }
   },
   "started_at": "2026-11-23T18:25:28.119231+00:00",
@@ -88,14 +88,11 @@
   ],
   "pages_per_site": 1,
   "dry_run": true,
-  "updated_at": "2026-11-27T02:00:02.188839+00:00",
-  "finished_at": "2026-11-27T02:00:02Z",
+  "updated_at": "2026-11-28T06:18:45.679049+00:00",
+  "finished_at": "2026-11-28T06:18:45Z",
   "totals": {
-    "upserted": 0
+    "upserted": 32
   },
-  "failed_sites": [
-    "influencersgonewild",
-    "sheeshfans"
-  ],
+  "failed_sites": [],
   "degraded_sites": []
 }

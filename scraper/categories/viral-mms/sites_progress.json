@@ -5,12 +5,12 @@
       "site": "desi49",
       "errors": 0,
       "status": "completed",
-      "upserted": 50,
+      "upserted": 7,
       "last_error": null,
-      "finished_at": "2026-11-27T01:57:41.407765+00:00",
+      "finished_at": "2026-11-28T06:08:23.686876+00:00",
       "items_found": 56,
-      "current_page": 16,
-      "skipped_dead": 6,
+      "current_page": 24,
+      "skipped_dead": 49,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -18,12 +18,12 @@
       "site": "mydesi",
       "errors": 0,
       "status": "completed",
-      "upserted": 56,
+      "upserted": 54,
       "last_error": null,
-      "finished_at": "2026-11-27T01:57:48.274600+00:00",
+      "finished_at": "2026-11-28T06:08:32.291812+00:00",
       "items_found": 56,
-      "current_page": 16,
-      "skipped_dead": 0,
+      "current_page": 23,
+      "skipped_dead": 2,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -33,9 +33,9 @@
       "status": "completed",
       "upserted": 18,
       "last_error": null,
-      "finished_at": "2026-11-27T01:57:13.567498+00:00",
+      "finished_at": "2026-11-28T06:07:56.449765+00:00",
       "items_found": 20,
-      "current_page": 16,
+      "current_page": 24,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -46,9 +46,9 @@
       "status": "completed",
       "upserted": 20,
       "last_error": null,
-      "finished_at": "2026-11-27T01:57:58.105600+00:00",
+      "finished_at": "2026-11-28T06:08:44.429749+00:00",
       "items_found": 20,
-      "current_page": 16,
+      "current_page": 24,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -61,11 +61,11 @@
     "mydesi",
     "indianbfclips"
   ],
-  "updated_at": "2026-11-27T01:57:58.421204+00:00",
+  "updated_at": "2026-11-28T06:08:44.825333+00:00",
   "failed_sites": [],
   "degraded_sites": [],
-  "finished_at": "2026-11-27T01:57:58.421177+00:00",
+  "finished_at": "2026-11-28T06:08:44.825282+00:00",
   "totals": {
-    "upserted": 145
+    "upserted": 101
   }
 }

@@ -1,104 +1,104 @@
 {
   "total_ingested": 0,
   "madouer:1": {
-    "max_pages": 1160,
-    "current_page": 3
+    "max_pages": 1163,
+    "current_page": 14
   },
   "madouer:3": {
     "max_pages": 962,
-    "current_page": 2
+    "current_page": 13
   },
   "madouer:4": {
-    "max_pages": 280,
-    "current_page": 2
+    "max_pages": 281,
+    "current_page": 13
   },
   "madouer:5": {
-    "max_pages": 2352,
-    "current_page": 2
+    "max_pages": 2357,
+    "current_page": 13
   },
   "madouer:6": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 100,
+    "current_page": 11
   },
   "madouer:7": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:8": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:9": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:10": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:11": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 10
   },
   "madouer:12": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:13": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 86,
+    "current_page": 11
   },
   "madouer:14": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 101,
+    "current_page": 11
   },
   "madouer:15": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 9
   },
   "madouer:16": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 11
   },
   "madouer:17": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 6
   },
   "madouer:18": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 58,
+    "current_page": 11
   },
   "madouer:22": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 600,
+    "current_page": 11
   },
   "madouer:31": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 164,
+    "current_page": 11
   },
   "madouer:32": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 157,
+    "current_page": 10
   },
   "dasj91:aifl": {
     "max_pages": 50,
     "current_page": 20
   },
   "dasj91:rmbg": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 59,
+    "current_page": 10
   },
   "dasj91:jxth": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 10
   },
   "dasj91:ldcz": {
-    "max_pages": 50,
-    "current_page": 1
+    "max_pages": 54,
+    "current_page": 10
   },
   "dasj91:qwys": {
     "max_pages": 50,
-    "current_page": 1
+    "current_page": 10
   },
   "madouhd:cate3": {
     "max_pages": 50,
@@ -712,5 +712,5 @@
     "max_pages": 4097,
     "current_page": 4
   },
-  "timestamp": "2026-11-26 05:52:17"
+  "timestamp": "2026-11-27 12:47:27"
 }

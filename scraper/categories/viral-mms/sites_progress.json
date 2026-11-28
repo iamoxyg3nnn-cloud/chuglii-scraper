@@ -5,12 +5,12 @@
       "site": "desi49",
       "errors": 0,
       "status": "completed",
-      "upserted": 7,
+      "upserted": 23,
       "last_error": null,
-      "finished_at": "2026-11-28T06:08:23.686876+00:00",
+      "finished_at": "2026-11-28T07:07:14.453470+00:00",
       "items_found": 56,
-      "current_page": 24,
-      "skipped_dead": 49,
+      "current_page": 25,
+      "skipped_dead": 33,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -18,12 +18,12 @@
       "site": "mydesi",
       "errors": 0,
       "status": "completed",
-      "upserted": 54,
+      "upserted": 15,
       "last_error": null,
-      "finished_at": "2026-11-28T06:08:32.291812+00:00",
+      "finished_at": "2026-11-28T07:07:21.353816+00:00",
       "items_found": 56,
-      "current_page": 23,
-      "skipped_dead": 2,
+      "current_page": 24,
+      "skipped_dead": 41,
       "pages_crawled": 1,
       "skipped_unresolved": 0
     },
@@ -31,11 +31,11 @@
       "site": "spicymms",
       "errors": 0,
       "status": "completed",
-      "upserted": 18,
+      "upserted": 20,
       "last_error": null,
-      "finished_at": "2026-11-28T06:07:56.449765+00:00",
+      "finished_at": "2026-11-28T07:06:25.597913+00:00",
       "items_found": 20,
-      "current_page": 24,
+      "current_page": 25,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -46,9 +46,9 @@
       "status": "completed",
       "upserted": 20,
       "last_error": null,
-      "finished_at": "2026-11-28T06:08:44.429749+00:00",
+      "finished_at": "2026-11-28T07:07:32.131411+00:00",
       "items_found": 20,
-      "current_page": 24,
+      "current_page": 25,
       "skipped_dead": 0,
       "pages_crawled": 1,
       "skipped_unresolved": 0
@@ -61,11 +61,11 @@
     "mydesi",
     "indianbfclips"
   ],
-  "updated_at": "2026-11-28T06:08:44.825333+00:00",
+  "updated_at": "2026-11-28T07:07:32.499934+00:00",
   "failed_sites": [],
   "degraded_sites": [],
-  "finished_at": "2026-11-28T06:08:44.825282+00:00",
+  "finished_at": "2026-11-28T07:07:32.499912+00:00",
   "totals": {
-    "upserted": 101
+    "upserted": 79
   }
 }

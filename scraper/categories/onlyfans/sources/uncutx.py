@@ -114,6 +114,11 @@ def _api_get(query: str, *, timeout: float = 30.0) -> Tuple[List[Dict[str, Any]]
         },
         cache_ttl=300,
     )
+    if page is not None and page.status == 416:
+        # PostgREST answers 416 when the requested range is past the end of the
+        # result set. That is a clean "no more rows", not an error, and it must
+        # not read as a blocked fetch.
+        return [], 0
     if page is None or page.status not in (200, 206):
         status = page.status if page is not None else "no-response"
         print(f"    [uncutx] API error {status} for {query[:80]}")

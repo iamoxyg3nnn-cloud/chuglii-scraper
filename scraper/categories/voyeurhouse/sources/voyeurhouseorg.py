@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
 
 from scraper.proxy_pool import GLOBAL_PROXY_POOL
 from scraper import net as _net
+from scraper.categories.voyeurhouse.sources import avs_base
 
 BASE_URL = "https://voyeur-house.org"
 NEW_URL = f"{BASE_URL}/newvideos.html"
@@ -109,7 +110,7 @@ def fetch_page(url: str, timeout: int = 25, retries: int = 3, *, referer: str = 
 
     if not proxy:
         page = _net.fetch(url, timeout=timeout, retries=retries, referer=referer)
-        if page is not None and page.status == 200 and not page.challenge:
+        if page is not None and page.status == 200 and not page.challenge and not page.error:
             return page
         if page is not None and page.status not in (404, 410):
             reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"
@@ -139,7 +140,7 @@ def fetch_page(url: str, timeout: int = 25, retries: int = 3, *, referer: str = 
             if _net.is_cf_challenge(status, raw_body, resp_headers):
                 print(f"    [VH] Cloudflare challenge via proxy on {url}; retrying without proxy.")
                 page = _net.fetch(url, timeout=timeout, retries=retries, referer=referer)
-                if page is not None and page.status == 200 and not page.challenge:
+                if page is not None and page.status == 200 and not page.challenge and not page.error:
                     return page
                 return None
             if status == 200:
@@ -170,7 +171,8 @@ def scrape_listing(page_num: int) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     url = NEW_URL if page_num <= 1 else f"{NEW_URL}?page={page_num}"
     resp = fetch_page(url)
     if not resp:
-        return [], None
+        # Block/timeout is not "the catalogue ended": keep the cursor.
+        raise avs_base.ListingUnavailable(f"listing unavailable for {url}")
     html = _html(resp)
 
     items: List[Dict[str, Any]] = []

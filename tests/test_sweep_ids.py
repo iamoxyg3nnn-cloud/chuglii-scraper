@@ -160,3 +160,57 @@ def test_sweep_formats_past_an_hour_with_hours(monkeypatch):
     sweep_ids.sweep(minutes=5, min_id=100, max_id=101)
 
     assert h.flushed[0][0]["duration_formatted"] == "1:51:24"
+
+
+# ─── Origin-outage circuit breaker (run 46093407022) ────────────────────────
+# borntobefuck.com answered HTTP 200 with `Internal server error.` for hours.
+# The sweep read "no metadata" as "no video", wrote 5,328 live ids off as dead
+# and advanced its cursor from 25,247 to 30,575. The very next step in the same
+# job (verify_dead.py) re-checked 975 of those rows and found 974 alive.
+
+
+def test_unreadable_origin_is_never_marked_dead(monkeypatch):
+    """`UNAVAILABLE` means retry, not dead — even for a whole run."""
+    h = Harness(monkeypatch, watch=lambda vid: btb.UNAVAILABLE)
+    summary = sweep_ids.sweep(minutes=5, min_id=100, max_id=140)
+
+    assert summary["dead"] == 0, "a site outage must never write ids off"
+    assert summary["stored"] == 0
+    assert summary["cursor"] == 100, "the cursor must not move past unread ids"
+    assert all(status != "dead" for _, status in h.dead_marks), h.dead_marks
+    assert summary["origin_unhealthy"] is True
+
+
+def test_unreadable_detail_fetch_is_not_dead(monkeypatch):
+    h = Harness(monkeypatch)
+    monkeypatch.setattr(
+        btb, "enrich_detail",
+        lambda card: {**card, "stream_unavailable": True},
+    )
+    summary = sweep_ids.sweep(minutes=5, min_id=100, max_id=102)
+    assert summary["dead"] == 0
+    assert all(status != "dead" for _, status in h.dead_marks)
+
+
+def test_mass_dead_verdicts_trip_the_breaker_and_hold_the_cursor(monkeypatch):
+    """40+ probes that are 95%+ dead is the site, not the catalogue."""
+    h = Harness(monkeypatch, watch=lambda vid: None)      # every page empty
+    summary = sweep_ids.sweep(minutes=5, min_id=100, max_id=200)
+
+    assert summary["origin_unhealthy"] is True
+    assert summary["dead"] == 0, "nothing may be persisted from a poisoned run"
+    assert summary["cursor"] == 100
+    assert all(status != "dead" for _, status in h.dead_marks), h.dead_marks
+
+
+def test_a_genuinely_mixed_run_still_persists_dead_ids(monkeypatch):
+    """The breaker must not cripple the normal case (a real dead archive)."""
+    def watch(vid):
+        return None if int(vid) % 3 == 0 else {"source_post_id": vid, "title": "t"}
+
+    h = Harness(monkeypatch, watch=watch)
+    summary = sweep_ids.sweep(minutes=5, min_id=100, max_id=200)
+
+    assert summary["origin_unhealthy"] is False
+    assert summary["dead"] > 0
+    assert any(status == "dead" for _, status in h.dead_marks)

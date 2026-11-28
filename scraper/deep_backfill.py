@@ -310,6 +310,12 @@ def run_deep_backfill(
                         dry_run=False,
                         jitter=jitter,
                         progress=progress,
+                        # The chunk itself must stop at the session deadline.
+                        # Checking only between chunks let an 88-minute run
+                        # overrun a 60-minute deep budget by 28 minutes, and the
+                        # pages crawled after the deadline were thrown away
+                        # because the cursor only advanced on chunk return.
+                        deadline=deadline - min_chunk_seconds,
                     )
                 except Exception as exc:
                     print(f"[DEEP] [{cfg['label']}] {term}: chunk failed, skipping zone this pass: {exc}")
@@ -347,6 +353,11 @@ def run_deep_backfill(
                 new_cur = int(state.get("current_page", 1) or 1)
                 if new_cur > int(state.get("max_pages", 50) or 50):
                     print(f"[DEEP] [{cfg['label']}] {term}: COMPLETE ({new_cur - 1} pages indexed)")
+                if stats.get("deadline_hit"):
+                    # The chunk stopped on the budget, not on a stall: leave the
+                    # pass cleanly instead of counting a false stall.
+                    summary["stopped_at"] = "deadline"
+                    break
                 if not progressed:
                     # No page was indexed and nothing advanced: one dead zone
                     # must never starve the rest of the backlog for the session.

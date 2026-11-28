@@ -72,6 +72,16 @@ jobs:
         # (seen on content.zavastream.com during the sweep).
         run: python -m patchright install --with-deps chromium
 
+      - name: Ledger Report (detect a false-dead episode)
+        # The sweep now refuses to persist lopsided verdicts, but a site outage
+        # that slips through is only visible in the ledger: a burst of `dead`
+        # rows with no `stored` rows in the same hour is the signature
+        # (2026-11-28: 5,328 dead, 0 stored while the origin answered HTTP 200
+        # with "Internal server error.").
+        run: |
+          python -X utf8 scraper/tools/onlyfans_ledger_repair.py --report --site borntobefuck || true
+          python -X utf8 scraper/tools/onlyfans_ledger_repair.py --site borntobefuck || true
+
       - name: Sweep Archive Id Space (borntobefuck)
         # Listings show a rolling ~1-month window (597 of ~23k ids), so the
         # archive is only reachable by walking the id space. The cursor lives in

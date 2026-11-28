@@ -29,6 +29,7 @@ for p in [str(PROJECT_ROOT), str(SCRAPER_DIR), str(CURRENT_DIR)]:
 
 from polish import polish_scraped_record  # noqa: E402
 from sources import SOURCES  # noqa: E402
+from scraper import budget  # noqa: E402
 
 VIRAL_MMS_SITES = ("spicymms", "desi49", "mydesi", "indianbfclips")
 CHECKPOINT_FILE = CURRENT_DIR / "sites_checkpoint.json"
@@ -144,6 +145,7 @@ def run_site_crawl(
     new_only: bool = False,
     workers: int = 4,
     progress: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     source_mod = SOURCES.get(site_key)
     if not source_mod:
@@ -165,6 +167,7 @@ def run_site_crawl(
         "upserted": 0,
         "upsert_failed": False,
         "fetch_failed": False,
+        "deadline_hit": False,
         "errors": 0,
         "last_error": None,
     }
@@ -172,6 +175,10 @@ def run_site_crawl(
 
     for idx in range(max_pages):
         page_num = start_page + idx
+        if budget.expired(deadline):
+            stats["deadline_hit"] = True
+            print(f"    [BUDGET] {site_key}: stopping at page {page_num} (feed deadline reached).")
+            break
         cards, detected_max, fetch_ok = source_mod.scrape_listing(page_num)
         if isinstance(detected_max, int) and detected_max > 0:
             stats["detected_max_pages"] = max(stats.get("detected_max_pages") or 0, detected_max)
@@ -294,6 +301,7 @@ def run_multi_site_pipeline(
     check_head: bool = True,
     dry_run: bool = False,
     workers: int = 4,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     target_sites = [s for s in (sites or list(VIRAL_MMS_SITES)) if s in SOURCES]
     checkpoints = load_checkpoints()
@@ -311,6 +319,9 @@ def run_multi_site_pipeline(
     failed_sites: List[str] = []
 
     for site_key in target_sites:
+        if budget.expired(deadline):
+            print("  [BUDGET] Viral MMS sites feed deadline reached; remaining sites resume next cycle.")
+            break
         state = checkpoints.setdefault(site_key, {"current_page": 1, "max_pages": 250})
         try:
             if check_head:
@@ -324,6 +335,7 @@ def run_multi_site_pipeline(
                     new_only=True,
                     workers=workers,
                     progress=None if dry_run else progress,
+                    deadline=deadline,
                 )
                 total_upserted += int(head_res.get("upserted", 0) or 0)
 
@@ -340,6 +352,7 @@ def run_multi_site_pipeline(
                     new_only=False,
                     workers=workers,
                     progress=None if dry_run else progress,
+                    deadline=deadline,
                 )
                 total_upserted += int(hist_res.get("upserted", 0) or 0)
                 if not hist_res.get("upsert_failed") and not hist_res.get("fetch_failed"):

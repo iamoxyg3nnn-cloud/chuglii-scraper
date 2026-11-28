@@ -9,9 +9,9 @@ on:
         required: false
         default: 'manual'
       session_minutes:
-        description: 'Daemon session duration in minutes. Must stay well under the 5.5h hard cancel (node-watchman) so the post-session backfills and the checkpoint commit always run.'
+        description: 'Daemon session duration in minutes. Must stay well under the 5.5h hard cancel (node-watchman) so the post-session backfills and the checkpoint commit always run. 280 leaves ~45 min of the 325-min job timeout for install, the title backfills, the checkpoint commit and the successor dispatch.'
         required: false
-        default: '240'
+        default: '280'
       interval_seconds:
         description: 'Interval between scan cycles in seconds (default: 60 = 1m)'
         required: false
@@ -82,6 +82,9 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      # CJK titles are logged by the chinese/fangsung/studios feeds; without this
+      # any host with a non-UTF-8 default encoding can abort the daemon mid-page.
+      PYTHONIOENCODING: "utf-8"
       SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://supabase.chuglii.in' }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -92,6 +95,13 @@ jobs:
       # Optional operator-supplied proxy (residential/datacenter): used first
       # for every blocked host before the public pool is harvested.
       SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL }}
+      # Detail enrichment waits on a CDN + ffprobe per item; the origin caps
+      # throughput anyway, so 8 workers is the sweet spot (measured: 8 and 14
+      # workers both finish 20 detail pages in ~15s).
+      SCRAPER_ENRICH_WORKERS: "8"
+      # Smallest slice worth giving a feed. With 10 feeds this keeps every one
+      # of them running every session instead of the slowest eating the session.
+      SCRAPER_FEED_MIN_SECONDS: "240"
 
     steps:
       - name: Checkout repository
@@ -132,7 +142,7 @@ jobs:
       - name: Run Unified Human-Adaptive Scraper Daemon
         id: scraper-daemon
         env:
-          SESSION_MINS: ${{ github.event.inputs.session_minutes || '240' }}
+          SESSION_MINS: ${{ github.event.inputs.session_minutes || '280' }}
           INTERVAL_SECS: ${{ github.event.inputs.interval_seconds || '60' }}
         run: |
           echo "=========================================================="
@@ -145,6 +155,7 @@ jobs:
           echo "Feed 6: Chinese (uxj838238 -> scraper.chinese_videos, 37 zones, JAV/livestream excluded)"
           echo "Feed 7: Fangsung (www.fangsung.com -> scraper.fangsung_videos, region terms)"
           echo "Feed 8: Studios (madouer.cc -> scraper.studios_videos, site sections)"
+          echo "Feeds are rotated and each one gets a fair slice of the session."
           echo "Mode: 24/7 Self-Chaining Continuous Daemon"
           echo "Session Duration: ${SESSION_MINS} minutes"
           echo "Scan Interval:    ${INTERVAL_SECS} seconds"
@@ -247,7 +258,7 @@ jobs:
           gh workflow run scrapers-auto-sync.yml \
             --ref "${{ github.ref_name }}" \
             -f triggered_by="self-chain" \
-            -f session_minutes="${{ github.event.inputs.session_minutes || '240' }}" \
+            -f session_minutes="${{ github.event.inputs.session_minutes || '280' }}" \
             -f interval_seconds="${{ github.event.inputs.interval_seconds || '60' }}" || true
 
           echo "[✓] Successor workflow dispatched. 24/7 handoff complete."

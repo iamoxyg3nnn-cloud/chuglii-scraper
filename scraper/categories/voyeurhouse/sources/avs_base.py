@@ -35,6 +35,16 @@ UA = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+#: A block/timeout is not the end of the catalogue. Re-exported here so every
+#: AVS adapter can raise one without importing another package.
+from scraper.categories.listing_errors import ListingUnavailable  # noqa: E402,F401
+
+#: After this many consecutive unreadable pages a host is treated as blocked for
+#: the rest of the process (hotscopes.net answers 403 to this runner on every
+#: request; the fleet used to spend ~9 minutes per cycle of proxy churn on it).
+_HOST_FAILURES: Dict[str, int] = {}
+HOST_FAILURE_LIMIT = int(os.environ.get("SCRAPER_AVS_HOST_FAILURE_LIMIT", "3"))
+
 # Doodstream-family hosts are geo-blocked from India and always need a proxy.
 DOOD_HOST_RE = re.compile(
     r"(?:^|\.)(?:dood|c?d000d|doodstream|ds2play|bysezejataos)(?:\.|$)",
@@ -144,6 +154,9 @@ def fetch_html(
     """
     if not url or creq is None:
         return "", url, 0
+    host = urlparse(url).netloc
+    if _HOST_FAILURES.get(host, 0) >= HOST_FAILURE_LIMIT:
+        return "", url, 403          # blocked for this session: fail fast
     proxy = proxy_for(url)
     headers = {
         "User-Agent": UA,
@@ -173,9 +186,17 @@ def fetch_html(
                 if _net.is_cf_challenge(status, html.encode("utf-8", errors="ignore"), resp_headers):
                     print(f"    [AVS] Cloudflare challenge on {url}; escalating to shared solver.")
                     page = _net.fetch(url, timeout=timeout, retries=1, referer=referer or None)
-                    if page is not None and page.status == 200 and not page.challenge:
+                    if page is not None and page.status == 200 and not page.challenge and not page.error:
+                        _HOST_FAILURES[host] = 0
                         return page.html_content, url, 200
+                    _HOST_FAILURES[host] = _HOST_FAILURES.get(host, 0) + 1
+                    if _HOST_FAILURES[host] == HOST_FAILURE_LIMIT:
+                        print(f"    [AVS] {host} is unreachable for this runner; skipping it for the rest of the session.")
                     return "", url, 403
+                if status == 200 and html:
+                    _HOST_FAILURES[host] = 0
+                elif _net.is_block_status(status) or status >= 500 or not html:
+                    _HOST_FAILURES[host] = _HOST_FAILURES.get(host, 0) + 1
                 return html, final_url, status
             except Exception as exc:
                 msg = str(exc).lower()

@@ -8,6 +8,7 @@ Video-only site: no torrents, no cdn_endpoints.
 """
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ try:
         save_cache as save_translation_cache,
     )
     from scraper.categories.listing_errors import ListingUnavailable
+    from scraper import budget
 except ImportError:
     from sources import SOURCES  # type: ignore
     from categories import DEFAULT_CATEGORIES, category_info  # type: ignore
@@ -168,10 +170,18 @@ def log_progress(cat_key: str, stats: Dict[str, Any], *, page_num=None, end_page
 # Concurrent Enrichment
 # ─────────────────────────────────────────────────────────────────────────────
 
-def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: int = 5) -> List[Dict[str, Any]]:
+# Detail enrichment is dominated by waiting (a CDN fetch plus an ffprobe
+# subprocess per item), so the pool is wider than the CPU count. Tunable
+# because one origin may need to be gentler than another.
+ENRICH_WORKERS = max(1, int(os.environ.get("SCRAPER_ENRICH_WORKERS", "8")))
+
+
+def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetches detail pages for listing items concurrently."""
     if not items:
         return []
+    if max_workers is None:
+        max_workers = ENRICH_WORKERS
     enriched = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(source_module.enrich_detail, item): item for item in items}
@@ -200,6 +210,7 @@ def run_category_crawl(
     jitter: float = 1.0,
     new_only: bool = False,
     progress: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Runs ingestion for one (site, region-term) pair. Data is isolated and
@@ -238,6 +249,7 @@ def run_category_crawl(
         "upsert_failed": False,
         "detected_max_pages": None,
         "stopped_early": False,
+        "deadline_hit": False,
         "upserted": 0,
         "errors": 0,
         "last_error": None,
@@ -247,6 +259,12 @@ def run_category_crawl(
 
     for page_idx in range(max_pages):
         page_num = start_page + page_idx
+        if budget.expired(deadline):
+            # Out of time for this feed: stop at the page we reached so the
+            # cursor keeps everything already fetched instead of losing it.
+            stats["deadline_hit"] = True
+            print(f"    [BUDGET] {cat_key}: stopping at page {page_num} (feed deadline reached).")
+            break
         try:
             cards, detected_max = source_mod.scrape_listing(category_id, page_num)
         except ListingUnavailable as e:
@@ -300,7 +318,7 @@ def run_category_crawl(
             continue
         known_page_streak = 0
 
-        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=5)
+        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=ENRICH_WORKERS)
 
         batch_to_upsert = []
         pending_ids: Set[str] = set()

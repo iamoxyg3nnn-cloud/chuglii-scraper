@@ -17,6 +17,9 @@ for p in (str(PROJECT_ROOT), str(SCRAPER_DIR), str(CURRENT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from scraper import budget  # noqa: E402
+from scraper.categories.listing_errors import ListingUnavailable  # noqa: E402
+
 try:
     from scraper.categories.voyeurhouse.polish import polish_voyeurhouse_record
     from scraper.categories.voyeurhouse.polish_avs import polish_avs_record
@@ -177,6 +180,7 @@ def run_site_crawl(
     new_only: bool = False,
     workers: int = 5,
     progress: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     source = SOURCES.get(site_key)
     if not source:
@@ -198,13 +202,28 @@ def run_site_crawl(
         "upserted": 0,
         "upsert_failed": False,
         "detected_max_pages": None,
+        "fetch_failed": False,
+        "deadline_hit": False,
         "errors": 0,
         "last_error": None,
     }
     known_streak = 0
 
     for page_num in range(start_page, end_page + 1):
-        cards, detected_max = source.scrape_listing(page_num)
+        if budget.expired(deadline):
+            stats["deadline_hit"] = True
+            print(f"    [BUDGET] {site_key}: stopping at page {page_num} (feed deadline reached).")
+            break
+        try:
+            cards, detected_max = source.scrape_listing(page_num)
+        except ListingUnavailable as exc:
+            # Blocked/timed out: NOT the end of the catalogue. Keep the cursor on
+            # this page and report the site as degraded instead of "completed".
+            stats["errors"] += 1
+            stats["fetch_failed"] = True
+            stats["last_error"] = f"listing unavailable on page {page_num}: {exc}"
+            print(f"    [!] {site_key} page {page_num} unavailable ({exc}); cursor stays here.")
+            break
         if isinstance(detected_max, int) and detected_max > 0:
             stats["detected_max_pages"] = max(int(stats.get("detected_max_pages") or 0), detected_max)
         if not cards:

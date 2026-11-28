@@ -58,6 +58,35 @@ PLAYER_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
+class _Unavailable:
+    """The origin could not be read: NOT evidence that a video is gone.
+
+    On 2026-11-28 the origin answered ``Internal server error.`` with HTTP 200
+    for hours. Every probe that could not read a page was recorded as a *dead
+    video*, so 10,512 live ids were written off between two sweeps. A failure to
+    read a page and a page that says "removed" are different facts, and only the
+    second one may mark an id dead.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return "<UNAVAILABLE>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+UNAVAILABLE = _Unavailable()
+
+
+def _unreadable(resp: Any) -> bool:
+    """True when ``resp`` is an empty/blocked/error answer rather than a page."""
+    if resp is None:
+        return True
+    return bool(getattr(resp, "error", False)) or bool(getattr(resp, "challenge", False))
+
+
 _RE_TITLE_SUFFIX = re.compile(r"\s*(?:Porn\s*Video|Pornovideo|Pornvideo)\s*BornToBeFuck\s*$", re.I)
 _RE_CARD_SPLIT = re.compile(r'class="video(?=[\s"])')
 _RE_WATCH = re.compile(r"/watch/(\d+)")
@@ -99,6 +128,9 @@ def fetch_page(
     )
     fetch_page.last_status = page.status if page is not None else None
     if page is not None and page.status == 200 and not page.challenge:
+        # Deliberately returns an origin-error page too: ``_unreadable()`` lets
+        # the caller separate "could not read" from "video is gone", which is
+        # the difference between retrying and writing a live id off.
         return page
     if page is not None and page.via != "dead-cache" and page.status not in (404, 410):
         reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"
@@ -239,7 +271,9 @@ def player_fragment(video_id: str) -> Optional[str]:
         referer=f"{BASE_URL}/watch/{vid}",
         solve_cf=False,
     )
-    return resp.html_content if resp else None
+    if _unreadable(resp):
+        return UNAVAILABLE
+    return resp.html_content
 
 
 #: Standard quality tiers, highest first. Labels are bucketed to these so the
@@ -319,14 +353,27 @@ def parse_master(master_url: str) -> List[Dict[str, Any]]:
 
 def resolve_stream(video_id: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """(master_url, servers) for a video id, or (None, []) when unplayable."""
+    master, servers, _unreadable_fragment = resolve_stream_state(video_id)
+    return master, servers
+
+
+def resolve_stream_state(video_id: str) -> Tuple[Optional[str], List[Dict[str, Any]], bool]:
+    """(master_url, servers, unreadable).
+
+    ``unreadable`` is True when the fragment could not be fetched at all (origin
+    5xx / block / timeout). That is not proof the video is gone, so callers must
+    retry instead of recording it dead.
+    """
     html = player_fragment(video_id)
+    if html is UNAVAILABLE:
+        return None, [], True
     if not html:
-        return None, []
+        return None, [], False                     # fetcher without a stream = dead
     match = re.search(r"https?://[^\"'\s]+index\.m3u8[^\"'\s]*", html)
     if not match:
-        return None, []                            # fragment without a stream = dead
+        return None, [], False                     # fragment without a stream = dead
     master = match.group(0)
-    return master, parse_master(master)
+    return master, parse_master(master), False
 
 
 # ─── Detail enrichment ──────────────────────────────────────────────────────
@@ -337,7 +384,11 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
     video_id = str(out.get("source_post_id") or "").strip()
     referer = f"{BASE_URL}/watch/{video_id}"
 
-    master, servers = resolve_stream(video_id)
+    master, servers, unreadable = resolve_stream_state(video_id)
+    if unreadable:
+        # The origin did not answer: retry later, never call it dead.
+        out["stream_unavailable"] = True
+        return out
     if not master:
         # Definitive: no fragment (unplayable archive id) or a 403 on it means
         # this video is restricted/gone. Flag it so the pipeline records it as
@@ -353,6 +404,10 @@ def enrich_detail(card: Dict[str, Any]) -> Dict[str, Any]:
         source_post_id=video_id,
     )
     if not alive:
+        if status == 0 or status >= 500:
+            # A transport failure or an origin 5xx is not a removed video.
+            out["stream_unavailable"] = True
+            return out
         print(f"      [borntobefuck] dead stream for {video_id} (HTTP {status}: {detail})")
         out["stream_dead"] = True
         return out
@@ -451,6 +506,8 @@ def scrape_metadata_from_watch(video_id: str) -> Optional[Dict[str, Any]]:
     if not vid.isdigit():
         return None
     resp = fetch_page(f"{BASE_URL}/watch/{vid}")
+    if _unreadable(resp):
+        return UNAVAILABLE                 # could not read: not "video is gone"
     if not resp:
         return None
     html = resp.html_content or ""
@@ -515,6 +572,8 @@ def enrich_from_id(video_id: str) -> Optional[Dict[str, Any]]:
     when the id is already known.
     """
     html = player_fragment(video_id)
+    if html is UNAVAILABLE:
+        return UNAVAILABLE          # could not read the fragment: retry later
     if not html:
         return None
     title_m = re.search(r"<title>([^<]{3,200})</title>", html, re.I)

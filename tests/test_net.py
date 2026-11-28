@@ -52,13 +52,17 @@ def install_plain(monkeypatch, responses):
         item = responses[min(len(calls) - 1, len(responses) - 1)]
         if item is None:
             return None
+        challenge = net.is_cf_challenge(item.status, item.body, item.headers)
         return net.Page(
             url=url,
             status=item.status,
             body=item.body,
             headers=item.headers,
             via="fetcher",
-            challenge=net.is_cf_challenge(item.status, item.body, item.headers),
+            challenge=challenge,
+            error=False if challenge else net.is_origin_error_page(
+                item.status, item.body, item.headers
+            ),
         )
 
     monkeypatch.setattr(net, "_plain_get", fake_plain)
@@ -320,3 +324,65 @@ def test_is_media_url_shapes():
     assert net._is_media_url("https://cdn/img/cover.JPG")
     assert not net._is_media_url("https://site/category/cate3/")
     assert not net._is_media_url("https://site/page.html")
+
+
+# ─── Origin-error pages (run 46093407022) ───────────────────────────────────
+# borntobefuck.com answered HTTP 200 with 22 bytes of "Internal server error."
+# for hours. Every parser read that as "zero cards", so zones were pinned
+# COMPLETE and 5,328 live ids were recorded dead. An error page is never
+# content, and never proof that a URL is gone.
+
+
+def test_origin_error_header_is_detected():
+    assert net.is_origin_error_page(
+        200, b"Internal server error.", {"status": "500 Internal Server Error"}
+    )
+
+
+def test_origin_error_marker_needs_a_tiny_body():
+    small = b"<html><body>Internal server error.</body></html>"
+    huge = b"<html><body>" + b"x" * 9000 + b" internal server error</body></html>"
+    assert net.is_origin_error_page(200, small, {})
+    assert not net.is_origin_error_page(200, huge, {}), "a real page must never be misread"
+
+
+def test_real_pages_are_not_error_pages():
+    assert not net.is_origin_error_page(200, b"<html><title>Listing</title></html>", {})
+    assert not net.is_origin_error_page(404, b"", {})
+    assert not net.is_origin_error_page(200, b"", {})
+
+
+def test_origin_error_page_is_never_content_or_cached(monkeypatch):
+    install_plain(monkeypatch, [FakeResp(200, b"Internal server error.")])
+    page = net.fetch("https://broken.test/list/", retries=1)
+    assert page is not None
+    assert page.error is True
+    assert not page, "an error page must be falsy so `if not resp` catches it"
+    assert page.body == b"", "the error body must never reach a parser"
+    assert net.cache_stats()["entries"] == 0, "an origin error must never be cached"
+
+
+def test_origin_error_is_retried_once(monkeypatch):
+    calls = install_plain(
+        monkeypatch,
+        [FakeResp(200, b"Internal server error."), FakeResp(200, b"<html>real</html>")],
+    )
+    page = net.fetch("https://flaky.test/list/", retries=2)
+    assert page.status == 200 and not page.error
+    assert len(calls) == 2
+
+
+def test_transport_failure_marked_blocked_when_proxy_succeeds(monkeypatch):
+    """A timeout that a proxy fixes is an egress block, not a per-URL accident.
+
+    Without this mark every following URL paid 3 x 30s of doomed direct
+    timeouts first (ujx.838238.xyz managed ~1 URL per 90 seconds).
+    """
+    install_plain(monkeypatch, [None])
+    good = net.Page(url="https://uxj.838238.xyz/list/1.html", status=200, body=b"<html>ok</html>")
+    monkeypatch.setattr(net, "PROXY_FALLBACK", True)
+    monkeypatch.setattr(net, "_proxy_get", lambda *a, **k: good)
+
+    page = net.fetch("https://uxj.838238.xyz/list/1.html", retries=1)
+    assert page.status == 200
+    assert "uxj.838238.xyz" in net.blocked_hosts()

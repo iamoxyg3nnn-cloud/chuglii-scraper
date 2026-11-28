@@ -46,6 +46,24 @@ PROJECT_ROOT = CURRENT_DIR.parent
 # unbounded it consumed an entire 5-hour session and every feed starved
 # (run 45742796072). It is now auto-armed when a backlog exists but hard-capped
 # to a fraction of the session, so feeds always get their share.
+# Feed order inside a cycle. It is rotated every cycle (see
+# ``FEED_ROTATION``/``cycle_rotation`` in run_unified_sync_cycle) so a feed that
+# cannot finish in its slice is first next time instead of never.
+FEED_ROTATION: Tuple[str, ...] = (
+    "viral-mms",
+    "viral-mms-sites",
+    "supjav",
+    "myanmar",
+    "samusar",
+    "onlyfans",
+    "voyeurhouse",
+    "chinese",
+    "fangsung",
+    "studios",
+)
+# Smallest slice worth giving a feed (below this it is skipped, not half-run).
+FEED_MIN_SECONDS = float(os.environ.get("SCRAPER_FEED_MIN_SECONDS", "240"))
+
 DEEP_SESSION_FRACTION = float(os.environ.get("SCRAPER_DEEP_SESSION_FRACTION", "0.25"))
 DEEP_AUTOARM = os.environ.get("SCRAPER_DEEP_AUTOARM", "1") not in ("0", "false", "False", "")
 DEEP_AUTOARM_MIN_PAGES = int(os.environ.get("SCRAPER_DEEP_MIN_PAGES", "200"))
@@ -77,6 +95,7 @@ signal.signal(signal.SIGINT, handle_shutdown_signal)
 if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
+from scraper import budget
 from scraper.db import (
     get_supabase_client,
     is_supabase_healthy,
@@ -178,7 +197,11 @@ def init_known_id_caches() -> None:
 
 # ─── Viral MMS Ingestion Task ────────────────────────────────────────────────
 
-def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
+def run_viral_mms_sync(
+    check_head: bool = True,
+    pages: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs Viral MMS ingestion without advancing past blocked/failed pages."""
     global VIRAL_MMS_KNOWN_IDS
     log("\n" + "=" * 65)
@@ -264,7 +287,12 @@ def run_viral_mms_sync(check_head: bool = True, pages: int = 1) -> int:
         return total_ingested
 
 
-def run_viral_mms_sites_sync(check_head: bool = True, pages_per_site: int = 1, workers: int = 4) -> int:
+def run_viral_mms_sites_sync(
+    check_head: bool = True,
+    pages_per_site: int = 1,
+    workers: int = 4,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs isolated per-site Viral MMS sources (spicymms, desi49, mydesi, indianbfclips)."""
     log("\n" + "=" * 65)
     log("  [FEED 1b] Viral MMS Isolated Sites (SpicyMMS, Desi49, MyDesi, IndianBFClips)")
@@ -278,6 +306,7 @@ def run_viral_mms_sites_sync(check_head: bool = True, pages_per_site: int = 1, w
             check_head=check_head,
             dry_run=False,
             workers=workers,
+            deadline=deadline,
         )
         FEED_STATUS["viral-mms-sites"] = res.get("status", "completed")
         added = int(res.get("upserted", 0) or 0)
@@ -291,13 +320,23 @@ def run_viral_mms_sites_sync(check_head: bool = True, pages_per_site: int = 1, w
 
 # ─── Japanese JAV Ingestion Task ─────────────────────────────────────────────
 
-def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int = 3, checkpoint: Optional[Dict[str, Any]] = None) -> int:
+def run_japanese_jav_sync(
+    check_head: bool = True,
+    pages: int = 1,
+    workers: int = 3,
+    checkpoint: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs SupJav ingestion and only advances cursors after confirmed writes."""
     global JAV_KNOWN_IDS
     log("\n" + "=" * 65)
     log("  [FEED 2/5] SupJav Japanese JAV Scraper | Working Mirrors Only")
     log("=" * 65)
 
+    if budget.expired(deadline):
+        FEED_STATUS["supjav"] = "partial"
+        log("  [BUDGET] Japanese JAV feed deadline reached; resuming next cycle.")
+        return 0
     if not checkpoint:
         checkpoint = load_japanese_checkpoint()
     session = create_japanese_session()
@@ -424,7 +463,11 @@ def run_japanese_jav_sync(check_head: bool = True, pages: int = 1, workers: int 
 
 # ─── Myanmar (Buu Mal) Ingestion Task ────────────────────────────────────────
 
-def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
+def run_myanmar_sync(
+    check_head: bool = True,
+    workers: int = 4,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs Buu Mal ingestion without advancing on blocked pages or failed writes."""
     global MYANMAR_KNOWN_IDS
     log("\n" + "=" * 65)
@@ -451,6 +494,11 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
 
         curr_page = int(myanmar_state.get("current_page", 34) or 34)
         ingested = 0
+
+        if budget.expired(deadline):
+            FEED_STATUS["myanmar"] = "partial"
+            log("  [BUDGET] Myanmar feed deadline reached before its cursor page; resuming next cycle.")
+            return 0
 
         def commit(records: List[Dict[str, Any]], label: str) -> bool:
             nonlocal ingested
@@ -507,7 +555,12 @@ def run_myanmar_sync(check_head: bool = True, workers: int = 4) -> int:
         return 0
 
 
-def run_samusar_sync(check_head: bool = True, pages: int = 1, workers: int = 4) -> int:
+def run_samusar_sync(
+    check_head: bool = True,
+    pages: int = 1,
+    workers: int = 4,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs isolated Samusar Myanmar ingestion (scraper.samusar_videos)."""
     log("\n" + "=" * 65)
     log("  [FEED 3b] Samusar Myanmar Scraper | Isolated Schema")
@@ -515,7 +568,9 @@ def run_samusar_sync(check_head: bool = True, pages: int = 1, workers: int = 4) 
     try:
         from scraper.categories.myanmar.samusar_pipeline import run_pipeline
 
-        res = run_pipeline(pages=pages, check_head=check_head, workers=workers)
+        res = run_pipeline(
+            pages=pages, check_head=check_head, workers=workers, deadline=deadline
+        )
         FEED_STATUS["samusar"] = res.get("status", "completed")
         return int(res.get("upserted", 0) or 0)
     except Exception as e:
@@ -526,7 +581,11 @@ def run_samusar_sync(check_head: bool = True, pages: int = 1, workers: int = 4) 
 
 # ─── OnlyFans Leaks Ingestion Task ───────────────────────────────────────────
 
-def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
+def run_onlyfans_sync(
+    check_head: bool = True,
+    pages_per_site: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs each OnlyFans source independently with remote-first progress state."""
     log("\n" + "=" * 65)
     log("  [FEED 4/5] OnlyFans Leaks Multi-Site Fleet | Per-source isolated")
@@ -560,8 +619,13 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
         # Driven by the source registry, so registering a module is the only
         # step needed to add a site.
         sites = list(OF_SOURCES)
+        stopped_early = False
 
         for site_key in sites:
+            if budget.expired(deadline):
+                stopped_early = True
+                log(f"  [BUDGET] OnlyFans feed deadline reached; {site_key} and later sites resume next cycle.")
+                break
             if site_key not in OF_SOURCES:
                 continue
             site_state = checkpoints.setdefault(site_key, {"current_page": 1, "max_pages": 200})
@@ -579,6 +643,7 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
                         jitter=0.5,
                         new_only=True,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(h_stats.get("upserted", 0) or 0)
 
@@ -591,6 +656,7 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
                         dry_run=False,
                         jitter=0.8,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(c_stats.get("upserted", 0) or 0)
                     if not c_stats.get("upsert_failed"):
@@ -618,6 +684,8 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
             save_of_progress(progress)
 
         of_status = finalize_status(progress, failed_sites)
+        if stopped_early and of_status == "completed":
+            of_status = "partial"
         FEED_STATUS["onlyfans"] = of_status
         progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         progress["totals"] = {"upserted": total_new}
@@ -631,7 +699,11 @@ def run_onlyfans_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
         return 0
 
 
-def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> int:
+def run_voyeurhouse_sync(
+    check_head: bool = True,
+    pages_per_site: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs Voyeur House with per-site remote-first state and isolated failures."""
     log("\n" + "=" * 65)
     log("  [FEED 5/5] Voyeur House | 5 isolated websites (voyeur-house.org + reallifecam.to + 3 hotscopes.net)")
@@ -653,8 +725,14 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
 
         total_new = 0
         failed_sites: List[str] = []
+        blocked_sites: List[str] = []
+        stopped_early = False
 
         for site_key in vh.SOURCES:
+            if budget.expired(deadline):
+                stopped_early = True
+                log(f"  [BUDGET] Voyeur House feed deadline reached; {site_key} and later sites resume next cycle.")
+                break
             state = checkpoints.setdefault(site_key, {
                 "current_page": 1,
                 "max_pages": vh._default_max_pages(site_key),
@@ -665,13 +743,15 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
 
                 if check_head:
                     head = vh.run_site_crawl(
-                        site_key, 1, 1, known_ids, jitter=0.5, new_only=True, progress=progress
+                        site_key, 1, 1, known_ids, jitter=0.5, new_only=True,
+                        progress=progress, deadline=deadline,
                     )
                     total_new += int(head.get("upserted", 0) or 0)
 
                 if cursor <= max_pages:
                     stats = vh.run_site_crawl(
-                        site_key, cursor, pages_per_site, known_ids, jitter=0.8, progress=progress
+                        site_key, cursor, pages_per_site, known_ids, jitter=0.8,
+                        progress=progress, deadline=deadline,
                     )
                     total_new += int(stats.get("upserted", 0) or 0)
                     if not stats.get("upsert_failed"):
@@ -680,12 +760,20 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
                             state["current_page"] = cursor + crawled
                     else:
                         failed_sites.append(site_key)
+                    if stats.get("fetch_failed"):
+                        # The site blocked us: report it as degraded, not done.
+                        blocked_sites.append(site_key)
+                        state["blocked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     detected = stats.get("detected_max_pages")
                     if isinstance(detected, int) and detected > 0:
                         state["max_pages"] = max(int(state.get("max_pages", 0) or 0), detected)
 
                 site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
-                site_progress["status"] = "failed" if site_key in failed_sites else "completed"
+                site_progress["status"] = (
+                    "failed" if site_key in failed_sites
+                    else "blocked" if site_key in blocked_sites
+                    else "completed"
+                )
             except Exception as e:
                 failed_sites.append(site_key)
                 site_progress = progress.setdefault("sites", {}).setdefault(site_key, {})
@@ -699,6 +787,9 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
             vh.save_progress(progress)
 
         vh_status = finalize_status(progress, failed_sites)
+        if blocked_sites and vh_status == "completed":
+            vh_status = "partial"
+            log(f"  [!] Voyeur House sources blocked by their origin this cycle: {', '.join(blocked_sites)}")
         FEED_STATUS["voyeurhouse"] = vh_status
         progress["finished_at"] = vh._now_iso()
         progress["totals"] = {"upserted": total_new}
@@ -714,11 +805,19 @@ def run_voyeurhouse_sync(check_head: bool = True, pages_per_site: int = 1) -> in
 
 # ─── Chinese Category Ingestion Task ─────────────────────────────────────
 
-def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> int:
+def run_chinese_sync(
+    check_head: bool = True,
+    pages_per_category: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs the Chinese category (uxj838238) per-category with remote-first state.
 
     JAV and livestream categories are excluded by the category whitelist.
     All records go strictly into scraper.chinese_videos.
+
+    ``deadline`` bounds the whole feed, not just one zone: 37 zones x (head page
+    + backfill page) at ~2 min/zone is over an hour, which is how this feed once
+    ate an entire 4-hour session and starved fangsung/studios.
     """
     log("\n" + "=" * 65)
     log("  [FEED 6/6] Chinese Category Fleet | uxj838238 | Isolated DB")
@@ -751,8 +850,13 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
 
         total_new = 0
         failed_categories: List[str] = []
+        stopped_early = False
 
         for category_id in CN_CATEGORIES:
+            if budget.expired(deadline):
+                stopped_early = True
+                log(f"  [BUDGET] Chinese feed deadline reached; {category_id} and later zones resume next cycle.")
+                break
             if not cn_category_info(category_id):
                 continue
             cat_key = f"{CN_SITE_KEY}:{category_id}"
@@ -772,6 +876,7 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                         jitter=0.5,
                         new_only=True,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(h_stats.get("upserted", 0) or 0)
 
@@ -785,6 +890,7 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                         dry_run=False,
                         jitter=0.8,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(c_stats.get("upserted", 0) or 0)
                     if not c_stats.get("upsert_failed"):
@@ -822,6 +928,10 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
             save_cn_progress(progress)
 
         cn_status = finalize_status(progress, failed_categories)
+        if stopped_early and cn_status == "completed":
+            # Stopped on the feed budget, not finished: report it as degraded so
+            # the cycle summary never claims full coverage it did not reach.
+            cn_status = "partial"
         FEED_STATUS["chinese"] = cn_status
         progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         progress["totals"] = {"upserted": total_new}
@@ -835,9 +945,16 @@ def run_chinese_sync(check_head: bool = True, pages_per_category: int = 1) -> in
         return 0
 
 
-def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> int:
+def run_fangsung_sync(
+    check_head: bool = True,
+    pages_per_category: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs the fangsung category (www.fangsung.com) per-region-term with
-    remote-first state. All records go strictly into scraper.fangsung_videos."""
+    remote-first state. All records go strictly into scraper.fangsung_videos.
+
+    ``deadline`` stops the term loop so the feed can never outlive its slice.
+    """
     log("\n" + "=" * 65)
     log("  [FEED 7/7] Fangsung Category Fleet | www.fangsung.com | Isolated DB")
     log("=" * 65)
@@ -869,8 +986,13 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
 
         total_new = 0
         failed_categories: List[str] = []
+        stopped_early = False
 
         for category_id in FS_CATEGORIES:
+            if budget.expired(deadline):
+                stopped_early = True
+                log(f"  [BUDGET] Fangsung feed deadline reached; {category_id} and later terms resume next cycle.")
+                break
             if not fs_category_info(category_id):
                 continue
             cat_key = f"{FS_SITE_KEY}:{category_id}"
@@ -890,6 +1012,7 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
                         jitter=0.5,
                         new_only=True,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(h_stats.get("upserted", 0) or 0)
 
@@ -903,6 +1026,7 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
                         dry_run=False,
                         jitter=0.8,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(c_stats.get("upserted", 0) or 0)
                     if not c_stats.get("upsert_failed"):
@@ -940,6 +1064,8 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
             save_fs_progress(progress)
 
         fs_status = finalize_status(progress, failed_categories)
+        if stopped_early and fs_status == "completed":
+            fs_status = "partial"
         FEED_STATUS["fangsung"] = fs_status
         progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         progress["totals"] = {"upserted": total_new}
@@ -953,7 +1079,11 @@ def run_fangsung_sync(check_head: bool = True, pages_per_category: int = 1) -> i
         return 0
 
 
-def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> int:
+def run_studios_sync(
+    check_head: bool = True,
+    pages_per_category: int = 1,
+    deadline: Optional[float] = None,
+) -> int:
     """Runs the studios category (multi-site: madouer.cc in Phase A) per
     whitelisted site section with remote-first state. All records go strictly
     into scraper.studios_videos."""
@@ -987,8 +1117,13 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
 
         total_new = 0
         failed_categories: List[str] = []
+        stopped_early = False
 
         for st_site, category_id in ST_ZONES:
+            if budget.expired(deadline):
+                stopped_early = True
+                log(f"  [BUDGET] Studios feed deadline reached; {st_site}:{category_id} and later zones resume next cycle.")
+                break
             if not st_category_info(category_id):
                 continue
             cat_key = f"{st_site}:{category_id}"
@@ -1009,6 +1144,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                         jitter=0.5,
                         new_only=True,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(h_stats.get("upserted", 0) or 0)
 
@@ -1022,6 +1158,7 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
                         dry_run=False,
                         jitter=0.8,
                         progress=progress,
+                        deadline=deadline,
                     )
                     total_new += int(c_stats.get("upserted", 0) or 0)
                     if not c_stats.get("upsert_failed"):
@@ -1057,6 +1194,8 @@ def run_studios_sync(check_head: bool = True, pages_per_category: int = 1) -> in
             save_st_progress(progress)
 
         st_status = finalize_status(progress, failed_categories)
+        if stopped_early and st_status == "completed":
+            st_status = "partial"
         FEED_STATUS["studios"] = st_status
         progress["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         progress["totals"] = {"upserted": total_new}
@@ -1083,8 +1222,14 @@ def run_unified_sync_cycle(
     st_pages: int = 1,
     workers: int = 3,
     supabase_deadline: Optional[float] = None,
+    cycle_rotation: int = 0,
 ) -> Dict[str, int]:
-    """Executes a single combined sync cycle across target websites."""
+    """Executes a single combined sync cycle across target websites.
+
+    ``supabase_deadline`` is the session handoff time; each feed receives a
+    fair share of the time left (``FEED_ROTATION`` order is rotated by
+    ``cycle_rotation`` so no feed is permanently last).
+    """
     t0 = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     # FEED_STATUS is process-global; a stale "failed" from a previous cycle
@@ -1115,21 +1260,44 @@ def run_unified_sync_cycle(
     checkpoint = load_japanese_checkpoint()
     feed_counts: Dict[str, int] = {}
 
-    def run_feed(key: str, fn, **kwargs) -> int:
+    # Every feed below runs inside its own slice of the session, so no single
+    # feed can starve the rest. The list is also rotated per cycle: on
+    # 2026-11-27 the Chinese feed started at 14:50 and was still crawling when
+    # the job timeout killed the run at 18:34, so feeds 7 and 8 (fangsung,
+    # studios) never ran, the checkpoint commit never happened and the 24/7
+    # self-chain stopped dead. Rotation means the feeds that went last this
+    # cycle go first next cycle.
+    feed_plan = list(FEED_ROTATION)
+    if len(feed_plan) > 1:
+        shift = int(cycle_rotation) % len(feed_plan)
+        feed_plan = feed_plan[shift:] + feed_plan[:shift]
+
+    def feed_budget(key: str, feeds_left: int) -> Optional[float]:
+        """This feed's slice of what is left of the session."""
+        if supabase_deadline is None:
+            return None
+        return budget.fair_share(supabase_deadline, feeds_left, floor_seconds=FEED_MIN_SECONDS).at
+
+    def run_feed(key: str, fn, feeds_left: int = 1, **kwargs) -> int:
         # Handoff guard: a session that is killed mid-feed loses the checkpoint
-        # commit and the successor dispatch (the fleet used to be cancelled at
-        # the 5.5h mark while this cycle was still running feeds). Past the
-        # deadline we never start another feed; the cursor state is already
-        # persisted per page, so the next session resumes cleanly.
+        # commit and the successor dispatch. Past the deadline we never start
+        # another feed; cursor state is persisted per page, so the next session
+        # resumes cleanly.
         if supabase_deadline is not None and time.time() >= supabase_deadline - 120:
             FEED_STATUS.setdefault(key, "skipped")
             feed_counts[key] = 0
             log(f"  [HANDOFF] Deadline reached; skipping feed [{key}] so the session ends cleanly.")
             return 0
+        kwargs.setdefault("deadline", feed_budget(key, feeds_left))
+        left = budget.remaining(kwargs["deadline"])
+        if left is not None:
+            log(f"  [BUDGET] feed [{key}] has {left / 60:.1f} min of this session.")
+        started = time.time()
         try:
             count = int(fn(**kwargs) or 0)
             feed_counts[key] = count
             FEED_STATUS.setdefault(key, "completed")
+            log(f"  [DONE] feed [{key}] finished in {(time.time() - started) / 60:.1f} min.")
             return count
         except Exception as e:
             FEED_STATUS[key] = "failed"
@@ -1137,24 +1305,40 @@ def run_unified_sync_cycle(
             log(f"  [!] Feed [{key}] failed in isolation: {e}")
             return 0
 
-    mms_count = run_feed("viral-mms", run_viral_mms_sync, check_head=check_head, pages=mms_pages)
-    human_jitter(1.0, 2.0)
-    mms_sites_count = run_feed("viral-mms-sites", run_viral_mms_sites_sync, check_head=check_head, pages_per_site=mms_pages, workers=workers)
-    human_jitter(1.5, 2.5)
-    jav_count = run_feed("supjav", run_japanese_jav_sync, check_head=check_head, pages=jav_pages, workers=workers, checkpoint=checkpoint)
-    human_jitter(1.5, 2.5)
-    myanmar_count = run_feed("myanmar", run_myanmar_sync, check_head=check_head, workers=workers)
-    human_jitter(1.0, 2.0)
-    samusar_count = run_feed("samusar", run_samusar_sync, check_head=check_head, pages=1, workers=workers)
-    human_jitter(1.5, 2.5)
-    of_count = run_feed("onlyfans", run_onlyfans_sync, check_head=check_head, pages_per_site=of_pages)
-    vh_count = run_feed("voyeurhouse", run_voyeurhouse_sync, check_head=check_head, pages_per_site=vh_pages)
-    human_jitter(1.5, 2.5)
-    cn_count = run_feed("chinese", run_chinese_sync, check_head=check_head, pages_per_category=cn_pages)
-    human_jitter(1.5, 2.5)
-    fs_count = run_feed("fangsung", run_fangsung_sync, check_head=check_head, pages_per_category=fs_pages)
-    human_jitter(1.5, 2.5)
-    st_count = run_feed("studios", run_studios_sync, check_head=check_head, pages_per_category=st_pages)
+    # Runs are executed in the rotated plan order. ``feeds_left`` shrinks as the
+    # cycle progresses, so a fast feed returns its unused slice to the pool and
+    # the last feed gets everything that is left.
+    runners = {
+        "viral-mms": (run_viral_mms_sync, {"check_head": check_head, "pages": mms_pages}),
+        "viral-mms-sites": (run_viral_mms_sites_sync, {"check_head": check_head, "pages_per_site": mms_pages, "workers": workers}),
+        "supjav": (run_japanese_jav_sync, {"check_head": check_head, "pages": jav_pages, "workers": workers, "checkpoint": checkpoint}),
+        "myanmar": (run_myanmar_sync, {"check_head": check_head, "workers": workers}),
+        "samusar": (run_samusar_sync, {"check_head": check_head, "pages": 1, "workers": workers}),
+        "onlyfans": (run_onlyfans_sync, {"check_head": check_head, "pages_per_site": of_pages}),
+        "voyeurhouse": (run_voyeurhouse_sync, {"check_head": check_head, "pages_per_site": vh_pages}),
+        "chinese": (run_chinese_sync, {"check_head": check_head, "pages_per_category": cn_pages}),
+        "fangsung": (run_fangsung_sync, {"check_head": check_head, "pages_per_category": fs_pages}),
+        "studios": (run_studios_sync, {"check_head": check_head, "pages_per_category": st_pages}),
+    }
+    results: Dict[str, int] = {}
+    total_feeds = len(feed_plan)
+    for index, key in enumerate(feed_plan):
+        if key not in runners:
+            continue
+        fn, kwargs = runners[key]
+        results[key] = run_feed(key, fn, feeds_left=max(1, total_feeds - index), **kwargs)
+        human_jitter(1.0, 2.0)
+
+    mms_count = results.get("viral-mms", 0)
+    mms_sites_count = results.get("viral-mms-sites", 0)
+    jav_count = results.get("supjav", 0)
+    myanmar_count = results.get("myanmar", 0)
+    samusar_count = results.get("samusar", 0)
+    of_count = results.get("onlyfans", 0)
+    vh_count = results.get("voyeurhouse", 0)
+    cn_count = results.get("chinese", 0)
+    fs_count = results.get("fangsung", 0)
+    st_count = results.get("studios", 0)
 
     failed_feeds = sorted(k for k, status in FEED_STATUS.items() if status == "failed")
     # A feed skipped at the session deadline is degraded, not healthy: it must
@@ -1401,6 +1585,7 @@ def run_continuous_daemon(
                 st_pages=st_pages,
                 workers=workers,
                 supabase_deadline=supabase_handoff_deadline,
+                cycle_rotation=cycle - 1,
             )
         except Exception as e:
             log(f"[!] Error in cycle #{cycle}: {e}")

@@ -42,12 +42,14 @@ try:
         category_info,
     )
     from scraper.categories.listing_errors import ListingUnavailable
+    from scraper import budget
 except ImportError:
     from polish import polish_chinese_record
     from translate import save_cache as save_translation_cache
     from sources import SOURCES
     from categories import ALL_ENABLED_CATEGORIES, DEFAULT_CATEGORIES, category_info
     from listing_errors import ListingUnavailable  # type: ignore
+    from scraper import budget  # type: ignore
 
 from scrapling import Fetcher
 
@@ -183,10 +185,18 @@ def log_progress(cat_key: str, stats: Dict[str, Any], *, page_num=None, end_page
 # Concurrent Enrichment
 # ─────────────────────────────────────────────────────────────────────────────
 
-def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: int = 5) -> List[Dict[str, Any]]:
+# Detail enrichment is dominated by waiting (a CDN fetch plus an ffprobe
+# subprocess per item), so the pool is wider than the CPU count. Tunable
+# because one origin may need to be gentler than another.
+ENRICH_WORKERS = max(1, int(os.environ.get("SCRAPER_ENRICH_WORKERS", "8")))
+
+
+def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetches detail pages for listing items concurrently."""
     if not items:
         return []
+    if max_workers is None:
+        max_workers = ENRICH_WORKERS
     enriched = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(source_module.enrich_detail, item): item for item in items}
@@ -215,10 +225,16 @@ def run_category_crawl(
     jitter: float = 1.0,
     new_only: bool = False,
     progress: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Runs ingestion for one (site, category) pair. Data is isolated per site and
     strictly written to scraper.chinese_videos.
+
+    ``deadline`` (unix ts) is checked **before every page**: a chunk that cannot
+    finish stops at the page it reached, and the caller's cursor advances by the
+    pages actually crawled. Without this, one slow zone held a whole session and
+    the 20 pages it did fetch were thrown away on restart.
     """
     source_mod = SOURCES.get(site_key)
     if not source_mod:
@@ -254,6 +270,7 @@ def run_category_crawl(
         "upsert_failed": False,
         "detected_max_pages": None,
         "stopped_early": False,
+        "deadline_hit": False,
         "upserted": 0,
         "errors": 0,
         "last_error": None,
@@ -263,6 +280,12 @@ def run_category_crawl(
 
     for page_idx in range(max_pages):
         page_num = start_page + page_idx
+        if budget.expired(deadline):
+            # Out of time: keep the cursor on this page so the next session (or
+            # the next chunk) resumes exactly here instead of re-crawling.
+            stats["deadline_hit"] = True
+            print(f"    [BUDGET] {cat_key}: stopping at page {page_num} (feed deadline reached).")
+            break
         try:
             cards, detected_max = source_mod.scrape_listing(category_id, page_num)
         except ListingUnavailable as e:
@@ -318,7 +341,7 @@ def run_category_crawl(
             continue
         known_page_streak = 0
 
-        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=5)
+        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=ENRICH_WORKERS)
 
         batch_to_upsert = []
         pending_ids: Set[str] = set()

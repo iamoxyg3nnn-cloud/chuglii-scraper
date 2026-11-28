@@ -43,6 +43,8 @@ except ImportError:
 
 from scrapling import Fetcher
 
+from scraper import budget
+
 CHECKPOINT_FILE = CURRENT_DIR / "checkpoint.json"
 KNOWN_IDS_FILE = CURRENT_DIR / "known_post_ids.json"
 PROGRESS_FILE = CURRENT_DIR / "progress.json"
@@ -181,10 +183,18 @@ def log_progress(site: str, stats: Dict[str, Any], *, page_num: int = None, end_
 # Unified Concurrent Crawler
 # ─────────────────────────────────────────────────────────────────────────────
 
-def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: int = 5) -> List[Dict[str, Any]]:
+# Detail enrichment is dominated by waiting (a CDN fetch plus an ffprobe
+# subprocess per item), so the pool is wider than the CPU count. Tunable
+# because one origin may need to be gentler than another.
+ENRICH_WORKERS = max(1, int(os.environ.get("SCRAPER_ENRICH_WORKERS", "8")))
+
+
+def enrich_items_concurrently(source_module, items: List[Dict[str, Any]], max_workers: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetches details for listing items concurrently."""
     if not items:
         return []
+    if max_workers is None:
+        max_workers = ENRICH_WORKERS
     enriched = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(source_module.enrich_detail, item): item for item in items}
@@ -207,8 +217,13 @@ def run_site_crawl(
     jitter: float = 1.0,
     new_only: bool = False,
     progress: Optional[Dict[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Runs ingestion for a single source site. Data is isolated per site (no cross-site dedup/merge)."""
+    """Runs ingestion for a single source site. Data is isolated per site (no cross-site dedup/merge).
+
+    ``deadline`` (unix ts) is checked before every page so a slow site cannot
+    consume a whole feed budget.
+    """
     source_mod = SOURCES.get(site_key)
     if not source_mod:
         print(f"[!] Unknown site key: {site_key}")
@@ -235,6 +250,7 @@ def run_site_crawl(
         "upserted": 0,
         "skipped_unresolved": 0,
         "first_unresolved_page": None,
+        "deadline_hit": False,
         "errors": 0,
         "last_error": None,
     }
@@ -242,6 +258,10 @@ def run_site_crawl(
 
     for page_idx in range(max_pages):
         page_num = start_page + page_idx
+        if budget.expired(deadline):
+            stats["deadline_hit"] = True
+            print(f"    [BUDGET] {site_key}: stopping at page {page_num} (feed deadline reached).")
+            break
         cards, detected_max = source_mod.scrape_listing(page_num)
         if isinstance(detected_max, int) and detected_max > 0:
             stats["detected_max_pages"] = max(stats.get("detected_max_pages") or 0, detected_max)
@@ -275,7 +295,7 @@ def run_site_crawl(
         known_page_streak = 0
 
         # Concurrent detail enrichment
-        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=5)
+        enriched = enrich_items_concurrently(source_mod, new_cards, max_workers=ENRICH_WORKERS)
 
         # Polish and pass through Cross-Site Deduplicator
         batch_to_upsert = []

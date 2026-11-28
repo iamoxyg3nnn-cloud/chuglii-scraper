@@ -44,6 +44,7 @@ __all__ = [
     "Page",
     "fetch",
     "is_cf_challenge",
+    "is_origin_error_page",
     "cf_host_status",
     "clear_cache",
     "cache_stats",
@@ -67,7 +68,11 @@ CACHE_MAX_BYTES = int(float(os.environ.get("SCRAPER_CACHE_MAX_MB", "256")) * 102
 MAX_CACHE_BODY = int(float(os.environ.get("SCRAPER_CACHE_MAX_BODY_MB", "1")) * 1024 * 1024)
 CF_SESSION_REUSE_SECONDS = 45.0
 CF_RATE_LIMIT_COOLDOWN = 60.0
-CF_MAX_SOLVES_PER_HOST = int(os.environ.get("SCRAPER_CF_MAX_SOLVES", "6"))
+CF_MAX_SOLVES_PER_HOST = int(os.environ.get("SCRAPER_CF_MAX_SOLVES", "4"))
+# A host that fails this many solves in a row is not solvable from this runner:
+# give up on the browser for it and let the proxy tier answer (or fail fast).
+CF_MAX_FAILED_SOLVES = int(os.environ.get("SCRAPER_CF_MAX_FAILED_SOLVES", "2"))
+CF_HOPELESS_COOLDOWN = float(os.environ.get("SCRAPER_CF_HOPELESS_COOLDOWN", "1800"))
 
 # Proxy escalation. Origins routinely reject datacenter egress (GitHub Actions
 # runners) with a non-standard status instead of a Cloudflare challenge —
@@ -94,6 +99,29 @@ _UA = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# ─── Origin-error pages ─────────────────────────────────────────────────────
+# A dead *origin* (not us) still answers HTTP 200: borntobefuck.com returned
+# `Internal server error.` with 22 bytes and a `status: 500 Internal Server
+# Error` header for hours. Every parser downstream read that as "the listing is
+# empty", so zones were pinned as COMPLETE and 5,328 live ids were recorded as
+# dead (run 46093407022). An error page is never content and never absence.
+_ORIGIN_ERROR_HEADERS = ("status", "x-origin-status", "cf-origin-status")
+_ORIGIN_ERROR_MARKERS = (
+    "internal server error",
+    "500 internal server error",
+    "502 bad gateway",
+    "503 service temporarily unavailable",
+    "503 service unavailable",
+    "504 gateway time-out",
+    "504 gateway timeout",
+    "error establishing a database connection",
+    "there has been a critical error on this website",
+    "database error",
+)
+# A real page is bigger than this; an origin error page never is. Marker checks
+# are gated on it so a normal article mentioning "database error" is safe.
+_ORIGIN_ERROR_MAX_BODY = 4096
+
 # Short Cloudflare interstitials. Real content pages can embed Cloudflare
 # scripts, so markers only count inside a small body (see is_cf_challenge).
 _CF_BODY_MARKERS = (
@@ -116,6 +144,7 @@ _HOST_LAST: Dict[str, float] = {}                # host -> last request ts
 _CF_LAST_SOLVE: Dict[str, float] = {}            # host -> last successful solve
 _CF_COOLDOWN_UNTIL: Dict[str, float] = {}        # host -> 429 cooldown deadline
 _CF_SOLVES: Dict[str, int] = {}                  # host -> solves this process
+_CF_FAILED_SOLVES: Dict[str, int] = {}            # host -> consecutive failed solves
 _CF_SESSIONS: Dict[str, Dict[str, Any]] = {}     # host -> {cookies, user_agent}
 _CF_SESSIONS_LOADED: set[str] = set()
 
@@ -141,6 +170,9 @@ class Page:
     from_cache: bool = False
     via: str = "fetcher"      # fetcher | stealthy | proxy | cache | dead-cache
     challenge: bool = False
+    #: The origin (or its edge) answered with an error page instead of content.
+    #: Never content, and never proof that a URL is gone.
+    error: bool = False
     _root: Any = field(default=None, init=False, repr=False, compare=False)
 
     def _dom(self) -> Any:
@@ -171,12 +203,13 @@ class Page:
         return self.html_content
 
     def __bool__(self) -> bool:  # so `if page:` means "usable"
-        return self.status == 200
+        return self.status == 200 and not self.error
 
     def __repr__(self) -> str:
         src = " [cached]" if self.from_cache else ""
         cf = " [cloudflare]" if self.challenge else ""
-        return f"<Page {self.status} {self.url[:70]}{src}{cf}>"
+        err = " [origin-error]" if self.error else ""
+        return f"<Page {self.status} {self.url[:70]}{src}{cf}{err}>"
 
 
 # ─── Cloudflare detection ────────────────────────────────────────────────────
@@ -240,6 +273,52 @@ def is_cf_challenge(status: int, body: bytes = b"", headers: Optional[Dict[str, 
     if len(text) > 20000:
         return False
     return any(marker in text for marker in _CF_BODY_MARKERS)
+
+
+def _at_least(value: int, floor: int) -> int:
+    """At least ``floor`` (a tunable of 0 would otherwise disable a breaker)."""
+    try:
+        return max(int(floor), int(value))
+    except (TypeError, ValueError):
+        return int(floor)
+
+
+def is_origin_error_page(
+    status: int, body: bytes = b"", headers: Optional[Dict[str, str]] = None
+) -> bool:
+    """True when the *origin* answered with an error page instead of content.
+
+    This is the failure mode that silently corrupted the fleet: borntobefuck.com
+    returned HTTP **200** carrying 22 bytes of ``Internal server error.`` for
+    hours, so every parser saw "zero cards" and concluded the end of the
+    catalogue (zones pinned COMPLETE, 5,328 live ids recorded dead).
+
+    Detection is deliberately narrow so a healthy page is never misread:
+
+    - the edge's echoed origin status (``status: 500 Internal Server Error`` on
+      a 200 response, which Cloudflare sends),
+    - a known error phrase **inside a body too small to be a real page**.
+    """
+    if status in (404, 410):
+        return False                      # "gone" is a real answer, not an error
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    for key in _ORIGIN_ERROR_HEADERS:
+        echoed = hdrs.get(key, "").strip().lower()
+        if not echoed:
+            continue
+        try:
+            echoed_status = int(echoed.split()[0])
+        except (ValueError, IndexError):
+            continue
+        if echoed_status >= 500:
+            return True
+    raw = body or b""
+    if len(raw) > _ORIGIN_ERROR_MAX_BODY:
+        return False
+    text = raw.decode("utf-8", errors="ignore").lower()
+    if not text.strip():
+        return False
+    return any(marker in text for marker in _ORIGIN_ERROR_MARKERS)
 
 
 # ─── Disk cache ──────────────────────────────────────────────────────────────
@@ -317,8 +396,8 @@ def _cache_put(url: str, page: Page, body: bytes) -> None:
     """Persist a cacheable response. 404/410 are cached long-term (dead URL)."""
     if page.status not in (200, 404, 410):
         return                      # never cache transient 403/429/5xx
-    if page.status == 200 and page.challenge:
-        return                      # never cache a challenge as content
+    if page.status == 200 and (page.challenge or page.error):
+        return                      # never cache an interstitial or origin error
     if page.status == 200 and len(body) > MAX_CACHE_BODY:
         return                      # keep oversized pages out of the cache
     try:
@@ -591,7 +670,19 @@ def _stealth_fetch(
         body = bytes(getattr(resp, "body", b"") or b"")
         headers = dict(getattr(resp, "headers", {}) or {})
         if status != 200 or is_cf_challenge(status, body, headers):
+            failed = _CF_FAILED_SOLVES.get(host, 0) + 1
+            _CF_FAILED_SOLVES[host] = failed
             print(f"    [!] Still blocked on {host} after stealth fetch (HTTP {status}).")
+            if failed >= _at_least(CF_MAX_FAILED_SOLVES, 2):
+                # hotscopes.net answers 403 to this runner even through a solved
+                # browser. Retrying it every cycle wasted ~7 minutes per host per
+                # session; after two hopeless solves we stop launching browsers
+                # for it and let the proxy tier (which fails fast) answer.
+                _CF_COOLDOWN_UNTIL[host] = time.time() + CF_HOPELESS_COOLDOWN
+                print(
+                    f"    [!] {host} is not solvable from this runner; no more browser "
+                    f"solves for {int(CF_HOPELESS_COOLDOWN / 60)} min."
+                )
             return None
 
         cookies: Dict[str, str] = {}
@@ -609,6 +700,7 @@ def _stealth_fetch(
 
         _save_cf_session(host, cookies, ua)
         _CF_LAST_SOLVE[host] = time.time()
+        _CF_FAILED_SOLVES[host] = 0
         print(f"    [✓] Cloudflare cleared for {host}; cached {len(cookies)} cookies (cf_clearance).")
         return Page(
             url=url,
@@ -647,12 +739,17 @@ def _plain_get(
         "stealthy_headers": True,
         "timeout": timeout,
         "headers": req_headers,
+        # EVERY request gets exactly one attempt. Scrapling's Fetcher retries
+        # internally with a 30s timeout per attempt, so a direct request to an
+        # origin that times out cost 3 x 30s *inside the fetcher* and then
+        # net.fetch retried the whole thing twice more: the Chinese feed spent
+        # hours on dead URLs while parsing nothing. Retry policy lives here.
+        "retries": 1,
     }
     if session.get("cookies"):
         kwargs["cookies"] = session["cookies"]
     if proxy:
         kwargs["proxy"] = proxy
-        kwargs["retries"] = 1          # rotate fast instead of curl-retrying a dead proxy
     try:
         resp = Fetcher.get(url, **kwargs)
     except Exception:
@@ -670,6 +767,8 @@ def _plain_get(
         via="fetcher",
     )
     page.challenge = is_cf_challenge(status, body, resp_headers)
+    if not page.challenge:
+        page.error = is_origin_error_page(status, body, resp_headers)
     return page
 
 
@@ -864,6 +963,12 @@ def fetch(
             if accept_challenge_fallback:
                 proxied = _proxy_get(url, timeout, headers, referer, host)
                 if proxied is not None:
+                    # The proxy got through where our egress could not: this is
+                    # a transport-level block, so route the *host* (not just
+                    # this URL) through the pool from now on. Without this,
+                    # every following URL paid 3 x 30s of doomed direct timeouts
+                    # first (ujx.838238.xyz, ~1 URL every 90s).
+                    _mark_host_blocked(host)
                     if allow_cache:
                         _cache_put(url, proxied, proxied.body)
                     return proxied
@@ -873,6 +978,23 @@ def fetch(
         if page.status in (404, 410):
             _cache_put(url, page, b"")
             return page
+
+        # An origin error page (HTTP 200 + "Internal server error.") is neither
+        # content nor evidence that the URL is gone. Retry once, then hand back
+        # an unusable page so no parser can read it as an empty catalogue.
+        if page.error:
+            if attempt < attempts - 1:
+                time.sleep(min(1.5 * (attempt + 1), 6.0))
+                continue
+            return Page(
+                url=url,
+                status=page.status,
+                body=b"",
+                encoding=page.encoding,
+                headers=page.headers,
+                error=True,
+                via=page.via,
+            )
 
         if page.challenge or page.status in (403, 503):
             # A media 403 is a CDN rule (Referer/token/expiry), never a
@@ -911,7 +1033,6 @@ def fetch(
             if allow_cache:
                 _cache_put(url, page, page.body)
             return page
-
         if page.status in (429, 500, 502, 504) and attempt < attempts - 1:
             time.sleep(min(2.0 * (attempt + 1), max_backoff))
             continue

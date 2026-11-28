@@ -83,7 +83,7 @@ def normalize_cdn_url(url: Optional[str]) -> Optional[str]:
 def fetch_page(url: str, timeout: int = 25, retries: int = 3) -> Optional[Any]:
     """Fetch via the shared Cloudflare-aware, cached HTTP layer."""
     page = _net.fetch(url, timeout=timeout, retries=retries, referer=BASE_URL + "/")
-    if page is not None and page.status == 200 and not page.challenge:
+    if page is not None and page.status == 200 and not page.challenge and not page.error:
         return page
     if page is not None and page.via != "dead-cache" and page.status not in (404, 410):
         reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"

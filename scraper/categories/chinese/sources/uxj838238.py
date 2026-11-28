@@ -66,7 +66,7 @@ def fetch_page(url: str, timeout: int = 30, retries: int = 3) -> Optional[Any]:
     """Fetch via the shared Cloudflare-aware, cached HTTP layer."""
     page = _net.fetch(url, timeout=timeout, retries=retries)
     fetch_page.last_status = page.status if page is not None else None
-    if page is not None and page.status == 200 and not page.challenge:
+    if page is not None and page.status == 200 and not page.challenge and not page.error:
         return page
     if page is not None and page.via != "dead-cache" and page.status not in (404, 410):
         reason = "Cloudflare challenge" if page.challenge else f"HTTP {page.status}"

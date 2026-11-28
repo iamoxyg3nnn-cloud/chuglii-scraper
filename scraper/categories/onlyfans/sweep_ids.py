@@ -192,6 +192,7 @@ def sweep(
     unknown_total = 0
     run_start_id = start_id
     origin_unhealthy = False
+    committed_probed = 0          # only windows that were persisted count
 
     print(
         f"[sweep] {SITE} ids {start_id}..{stop_at} | budget {minutes:.0f} min | "
@@ -286,7 +287,7 @@ def sweep(
                 )
                 # Never advance past ids we could not honestly probe.
                 state["next_id"] = run_start_id
-                state["probed"] = max(0, int(state.get("probed", 0) or 0) - probed)
+                state["probed"] = max(0, int(state.get("probed", 0) or 0) - committed_probed)
                 if not dry_run:
                     save_state(state)
                 break
@@ -294,6 +295,7 @@ def sweep(
             # The cursor only covers ids fully handled in this window.
             state["next_id"] = (last_processed if last_processed is not None else start_id) + 1
             state["probed"] = state.get("probed", 0) + len(todo)
+            committed_probed += len(todo)
             state["dead"] = state.get("dead", 0) + len(new_dead)
             dead_total += len(new_dead)
             if not dry_run:

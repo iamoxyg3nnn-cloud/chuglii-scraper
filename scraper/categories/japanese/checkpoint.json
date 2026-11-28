@@ -4,7 +4,7 @@
       "completed": false,
       "max_pages": 1655,
       "stall_count": 0,
-      "current_page": 922
+      "current_page": 921
     },
     "popular": {
       "completed": true,
@@ -15,12 +15,12 @@
       "completed": false,
       "max_pages": 6555,
       "stall_count": 0,
-      "current_page": 921
+      "current_page": 920
     },
     "uncensored-jav": {
       "completed": false,
       "max_pages": 1958,
-      "stall_count": 1,
+      "stall_count": 0,
       "current_page": 921
     },
     "reducing-mosaic": {
@@ -31,7 +31,7 @@
     }
   },
   "stats": {
-    "last_sync": "2026-11-28T07:01:17Z",
-    "total_ingested": 31490
+    "last_sync": "2026-11-28T06:17:15Z",
+    "total_ingested": 31349
   }
 }
